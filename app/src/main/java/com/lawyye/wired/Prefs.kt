@@ -133,6 +133,11 @@ class Prefs(ctx: Context) {
         get() = int("columns", 4)
         set(v) = put("columns", v)
 
+    /** Swipe down on the home screen opens the WIRED shade instead of the system one. */
+    var ownShade: Boolean
+        get() = bool("own_shade", true)
+        set(v) = put("own_shade", v)
+
     var autoKeyboard: Boolean
         get() = bool("auto_keyboard", false)
         set(v) = put("auto_keyboard", v)

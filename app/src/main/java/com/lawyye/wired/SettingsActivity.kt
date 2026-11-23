@@ -100,6 +100,34 @@ class SettingsActivity : Activity() {
         })
         col.addView(screen)
 
+        // ------------------------------------------------ shade
+        val sh = Group(this, "шторка")
+        sh.add(switchRow(R.drawable.ic_arrow_down, "Своя шторка WIRED по свайпу вниз", prefs.ownShade) { prefs.ownShade = it })
+        sh.add(settingsRow(R.drawable.ic_bell, "Доступ к уведомлениям", accent,
+            value = if (NotifHub.hasAccess(this)) "есть" else "нет") { NotifHub.openAccess(this) })
+        sh.add(settingsRow(R.drawable.ic_sun, "Яркость и поворот из шторки", accent,
+            value = if (android.provider.Settings.System.canWrite(this)) "есть" else "нет") {
+            AppActions.safeStart(this, Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, android.net.Uri.parse("package:$packageName")))
+        })
+        col.addView(sh)
+        val shHint = meta("если доступ не включается: Сведения о WIRED → ⋮ → «Разрешить ограниченные настройки». " +
+            "Внутри других приложений сверху остаётся шторка Samsung — её не может заменить ни один лаунчер.")
+        shHint.setLineSpacing(0f, 1.4f)
+        shHint.setPadding(dpi(4), dpi(10), 0, 0)
+        col.addView(shHint)
+
+        // ------------------------------------------------ lock screen and recents
+        val lock = Group(this, "экран блокировки и недавние")
+        lock.add(settingsRow(R.drawable.ic_lock, "WIRED на экран блокировки", accent) { applyWallpaper(LockScreen.LOCK) })
+        lock.add(settingsRow(R.drawable.ic_grid, "WIRED фоном в недавних приложениях", accent) { applyWallpaper(LockScreen.SYSTEM) })
+        col.addView(lock)
+        val lockHint = meta("ставится текущий экран: картинка, CRT-картинка или «Провода», с затемнением, цветом и полосами. " +
+            "Часы на блокировке рисует Samsung: зажми палец на экране блокировки → редактор. " +
+            "Ряд иконок внизу в недавних — «Предлагаемые приложения», выключаются через ⋮ на том экране.")
+        lockHint.setLineSpacing(0f, 1.4f)
+        lockHint.setPadding(dpi(4), dpi(10), 0, 0)
+        col.addView(lockHint)
+
         // ------------------------------------------------ look
         val look = Group(this, "внешний вид")
         look.add(settingsRow(R.drawable.ic_palette, "Акцент", accent, trailing = swatches()))
@@ -185,6 +213,11 @@ class SettingsActivity : Activity() {
         lic.setPadding(dpi(4), dpi(14), 0, 0)
         lic.setLineSpacing(0f, 1.4f)
         col.addView(lic)
+    }
+
+    private fun applyWallpaper(which: Int) {
+        toast("Рисую обои…")
+        LockScreen.applyCurrent(this, which) { ok -> toast(if (ok) "Готово" else "Не получилось поставить обои") }
     }
 
     private fun profileHelp(p: Int): String = when (p) {

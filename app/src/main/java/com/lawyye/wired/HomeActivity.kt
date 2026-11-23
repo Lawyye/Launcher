@@ -32,7 +32,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
-class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
+class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.Host {
 
     private lateinit var prefs: Prefs
     private var accent = Wired.BLUE
@@ -45,6 +45,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
     private lateinit var drawer: DrawerView
     private lateinit var dock: DockView
     private lateinit var crt: CrtWindowView
+    private lateinit var shade: QuickPanelView
 
     private var clock: ClockView? = null
     private var dateLine: TextView? = null
@@ -62,6 +63,8 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
     private var closeDrawerOnStop = false
     private var gestureOnScroller = false
     private var downListAtTop = true
+    private var downOnShadeList = false
+    private var shadeListAtBottom = true
     private var batteryPct = -1
     private var charging = false
     private var netLabel = "—"
@@ -96,6 +99,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
         updateInfo()
         drawer.setApps(AppRepository.apps, prefs.hidden, prefs.launchCounts())
         crt.onVisible(true)
+        if (shade.isOpen) shade.refresh()
         if (screenWasOff) {
             screenWasOff = false
             onUnlock()
@@ -116,6 +120,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
             closeDrawerOnStop = false
             drawer.close(false)
         }
+        if (shade.isOpen) shade.close(false)
     }
 
     override fun onDestroy() {
@@ -133,12 +138,13 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
         super.onNewIntent(intent)
         setIntent(intent)
         if (drawer.isOpen) drawer.close(true)
+        if (shade.isOpen) shade.close(true)
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        // a launcher never leaves on back; back only closes the drawer
-        if (drawer.isOpen) drawer.close(true)
+        // a launcher never leaves on back; back only closes the drawer or the shade
+        if (drawer.isOpen) drawer.close(true) else if (shade.isOpen) shade.close(true)
     }
 
     // ------------------------------------------------------------------ layout
@@ -152,13 +158,14 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
         drawer = DrawerView(this, this)
         dock = DockView(this, this)
         crt = CrtWindowView(this)
+        shade = QuickPanelView(this, this)
         crt.setOnClickListener { nextCrtImage() }
         crt.setOnLongClickListener {
             crt.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             startActivity(Intent(this, CrtImagesActivity::class.java))
             true
         }
-        for (v in listOf(backdrop, gestureLayer, content, effects, drawer)) {
+        for (v in listOf(backdrop, gestureLayer, content, effects, shade, drawer)) {
             root.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
         }
         setupGestures()
@@ -173,6 +180,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
         val withIme = systemInsets(insets, true)
         content.setPadding(bars.left + dpi(24), bars.top + dpi(8), bars.right + dpi(24), bars.bottom + dpi(10))
         drawer.setInsets(bars, withIme)
+        shade.setInsets(bars.top, bars.bottom, bars.left, bars.right)
     }
 
     private fun applyStyle() {
@@ -202,6 +210,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
         crt.filter = ImageFilter.of(prefs.crtFilter)
         crt.continuous = prefs.continuousOn
         drawer.applyStyle(prefs)
+        shade.applyStyle(accent)
         buildContent()
         bindDock()
         loadImages()
@@ -528,6 +537,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
         val ss = if (prefs.seconds) String.format(Locale.US, ":%02d", cal.get(Calendar.SECOND)) else ""
         c.setTime(hh, mm, ss)
         dateLine?.text = dateFmt.format(Date()).lowercase()
+        if (::shade.isInitialized && shade.isOpen) shade.updateTime()
     }
 
     private fun updateInfo() {
@@ -553,7 +563,20 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
                     }
                     return false
                 }
-                if (dy < 0) openDrawer() else expandNotifications()
+                if (shade.isOpen) {
+                    if (dy < 0 && (!downOnShadeList || shadeListAtBottom)) {
+                        shade.close(true)
+                        return true
+                    }
+                    return false
+                }
+                if (dy < 0) {
+                    openDrawer()
+                } else if (prefs.ownShade) {
+                    shade.open()
+                } else {
+                    expandNotifications()
+                }
                 return true
             }
         })
@@ -579,6 +602,8 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
             gestureOnScroller = drawer.isOpen && drawer.isTouchOnScroller(ev.rawX, ev.rawY)
             downListAtTop = drawer.isAtTop()
+            downOnShadeList = shade.isOpen && shade.isTouchOnList(ev.rawX, ev.rawY)
+            shadeListAtBottom = shade.listAtBottom()
         }
         if (!gestureOnScroller) flingDetector.onTouchEvent(ev)
         return super.dispatchTouchEvent(ev)
@@ -603,6 +628,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
             .option(R.drawable.ic_squircle, "Экран: изображение", checked = mode == Prefs.HOME_IMAGE) { setMode(Prefs.HOME_IMAGE) }
             .option(R.drawable.ic_monitor, "Экран: CRT-окно", checked = mode == Prefs.HOME_CRT) { setMode(Prefs.HOME_CRT) }
             .option(R.drawable.ic_lines, "Экран: минимал", checked = mode == Prefs.HOME_MINIMAL) { setMode(Prefs.HOME_MINIMAL) }
+            .option(R.drawable.ic_lock, "WIRED на блокировку и в недавние") { applySystemWallpaper(LockScreen.LOCK or LockScreen.SYSTEM) }
             .option(R.drawable.ic_gear, "Настройки WIRED") { openSettings() }
             .option(R.drawable.ic_sparkle, "Системные настройки") { AppActions.safeStart(this, Intent(Settings.ACTION_SETTINGS)) }
             .show()
@@ -720,5 +746,19 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host {
 
     override fun drawerModeChanged(mode: Int) {
         prefs.drawerMode = mode
+    }
+
+    override fun systemShade() {
+        shade.close(false)
+        expandNotifications()
+    }
+
+    override fun closeShade() = shade.close(true)
+
+    private fun applySystemWallpaper(which: Int) {
+        toast("Рисую обои…")
+        LockScreen.applyCurrent(this, which) { ok ->
+            toast(if (ok) "Готово: экран блокировки и фон недавних обновлены" else "Не получилось поставить обои")
+        }
     }
 }

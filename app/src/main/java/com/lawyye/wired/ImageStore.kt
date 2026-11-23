@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
@@ -16,6 +17,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.Executors
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * The user's own pictures: picked with the system photo picker, copied once into private storage
@@ -83,17 +85,46 @@ object ImageStore {
     }
 
     private fun importBlocking(ctx: Context, uri: Uri, dst: File, maxEdge: Int) {
+        val bmp = if (Build.VERSION.SDK_INT >= 28) decodeModern(ctx, uri, maxEdge) else decodeLegacy(ctx, uri, maxEdge)
+        dst.parentFile?.mkdirs()
+        val tmp = File(dst.parentFile, dst.name + ".tmp")
+        FileOutputStream(tmp).use { bmp.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+        if (!tmp.renameTo(dst)) {
+            tmp.copyTo(dst, overwrite = true)
+            tmp.delete()
+        }
+    }
+
+    /** Android 9+: decodes straight to the target size; EXIF rotation and HEIC handled by the system. */
+    @android.annotation.TargetApi(28)
+    private fun decodeModern(ctx: Context, uri: Uri, maxEdge: Int): Bitmap {
+        val src = ImageDecoder.createSource(ctx.contentResolver, uri)
+        return ImageDecoder.decodeBitmap(src) { decoder, info, _ ->
+            val w = info.size.width
+            val h = info.size.height
+            val longEdge = max(w, h)
+            if (longEdge > maxEdge) {
+                val s = maxEdge.toFloat() / longEdge
+                decoder.setTargetSize(max(1, (w * s).roundToInt()), max(1, (h * s).roundToInt()))
+            }
+            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+        }
+    }
+
+    private fun decodeLegacy(ctx: Context, uri: Uri, maxEdge: Int): Bitmap {
         val cr = ctx.contentResolver
         val bounds = BitmapFactory.Options()
         bounds.inJustDecodeBounds = true
-        cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: error("no stream")
+        // with inJustDecodeBounds the decoder returns null by design: only the sizes are read
+        val stream = cr.openInputStream(uri) ?: error("no stream")
+        stream.use { BitmapFactory.decodeStream(it, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) error("not an image")
         var sample = 1
         while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxEdge) sample *= 2
         val opts = BitmapFactory.Options()
         opts.inSampleSize = sample
         var bmp: Bitmap = cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
             ?: error("decode failed")
-
         val rotation = try {
             cr.openInputStream(uri)?.use {
                 when (ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
@@ -114,14 +145,7 @@ object ImageStore {
             m.postScale(s, s)
         }
         if (!m.isIdentity) bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
-
-        dst.parentFile?.mkdirs()
-        val tmp = File(dst.parentFile, dst.name + ".tmp")
-        FileOutputStream(tmp).use { bmp.compress(Bitmap.CompressFormat.JPEG, 92, it) }
-        if (!tmp.renameTo(dst)) {
-            tmp.copyTo(dst, overwrite = true)
-            tmp.delete()
-        }
+        return bmp
     }
 
     /** Decodes [f] so its long edge is about [maxEdge] (never decodes more pixels than needed). */

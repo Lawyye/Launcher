@@ -51,6 +51,7 @@ class ComposerActivity : Activity() {
     private var side = Prefs.SIDE_LEFT
     private var newImage = false
     private var autoPicked = false
+    private var alsoLock = false
 
     private val temp: File get() = File(filesDir, "wallpaper_new.jpg")
 
@@ -128,6 +129,12 @@ class ComposerActivity : Activity() {
         prefs.clockSide = side
         prefs.homeMode = Prefs.HOME_IMAGE
         prefs.bumpStyle()
+        if (alsoLock) {
+            toast("Ставлю на экран блокировки…")
+            LockScreen.applyCurrent(this, LockScreen.LOCK) { ok ->
+                applicationContext.toast(if (ok) "Экран блокировки обновлён" else "Не получилось поставить на блокировку")
+            }
+        }
         finish()
     }
 
@@ -311,6 +318,17 @@ class ComposerActivity : Activity() {
         val slp = LinearLayout.LayoutParams(MATCH, WRAP)
         slp.topMargin = dpi(10)
         sheet.addView(sideSeg, slp)
+
+        val lockRow = LinearLayout(this)
+        lockRow.orientation = LinearLayout.HORIZONTAL
+        lockRow.gravity = Gravity.CENTER_VERTICAL
+        val lockText = label(14f, Wired.TEXT, Fonts.ui)
+        lockText.text = "И на экран блокировки"
+        lockRow.addView(lockText, LinearLayout.LayoutParams(0, WRAP, 1f))
+        lockRow.addView(wiredSwitch(alsoLock, accent, "И на экран блокировки") { alsoLock = it })
+        val llp = LinearLayout.LayoutParams(MATCH, WRAP)
+        llp.topMargin = dpi(4)
+        sheet.addView(lockRow, llp)
 
         val hint = meta("тяни картинку · щипок — масштаб · двойной тап — сброс", 10f)
         hint.setTextColor(Wired.STATIC)
