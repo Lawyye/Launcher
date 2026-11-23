@@ -51,5 +51,19 @@
             android:label="WIRED // CONFIG"
             android:screenOrientation="portrait"
             android:theme="@style/Theme.Wired.Settings" />
+
+        <activity
+            android:name=".ComposerActivity"
+            android:exported="false"
+            android:label="WIRED // композиция"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Wired.Settings" />
+
+        <activity
+            android:name=".CrtImagesActivity"
+            android:exported="false"
+            android:label="WIRED // CRT"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Wired.Settings" />
     </application>
 </manifest>

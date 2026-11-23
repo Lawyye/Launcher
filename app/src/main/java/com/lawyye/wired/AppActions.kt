@@ -26,12 +26,13 @@ object AppActions {
                 val loc = IntArray(2)
                 from.getLocationOnScreen(loc)
                 bounds = Rect(loc[0], loc[1], loc[0] + from.width, loc[1] + from.height)
-                opts = ActivityOptions.makeClipRevealAnimation(from, 0, 0, from.width, from.height).toBundle()
+                opts = ActivityOptions.makeScaleUpAnimation(from, 0, 0, from.width, from.height).toBundle()
             }
             la.startMainActivity(app.component, app.user, bounds, opts)
+            Prefs(act).countLaunch(app.key)
             true
         } catch (e: Throwable) {
-            act.toast("ACCESS DENIED // " + e.javaClass.simpleName)
+            act.toast("Не удалось открыть " + app.label)
             false
         }
     }
@@ -46,13 +47,7 @@ object AppActions {
         } catch (e: Throwable) {
             // fall through to the settings intent
         }
-        try {
-            act.startActivity(
-                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + app.packageName))
-            )
-        } catch (e: Throwable) {
-            act.toast("NO SIGNAL")
-        }
+        safeStart(act, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + app.packageName)))
     }
 
     fun uninstall(act: Activity, app: AppEntry) {
@@ -61,7 +56,7 @@ object AppActions {
             i.putExtra(Intent.EXTRA_USER, app.user)
             act.startActivity(i)
         } catch (e: Throwable) {
-            act.toast("CANNOT UNINSTALL THIS NODE")
+            act.toast("Это приложение нельзя удалить")
         }
     }
 
@@ -69,13 +64,19 @@ object AppActions {
         try {
             act.startActivity(Intent(Intent.ACTION_WEB_SEARCH).putExtra(SearchManager.QUERY, query))
         } catch (e: Throwable) {
-            try {
-                act.startActivity(
-                    Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + Uri.encode(query)))
-                )
-            } catch (e2: Throwable) {
-                act.toast("NO BROWSER FOUND")
-            }
+            safeStart(act, Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + Uri.encode(query))))
+        }
+    }
+
+    fun mapsSearch(act: Activity, query: String) {
+        safeStart(act, Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(query))))
+    }
+
+    fun storeSearch(act: Activity, query: String) {
+        try {
+            act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://search?q=" + Uri.encode(query))))
+        } catch (e: Throwable) {
+            safeStart(act, Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/search?q=" + Uri.encode(query))))
         }
     }
 
@@ -83,7 +84,7 @@ object AppActions {
         try {
             act.startActivity(intent)
         } catch (e: Throwable) {
-            act.toast("NO SIGNAL")
+            act.toast("Нет приложения для этого действия")
         }
     }
 }
@@ -102,6 +103,7 @@ object HomeRole {
         }
     }
 
+    @Suppress("DEPRECATION")
     fun request(act: Activity) {
         if (Build.VERSION.SDK_INT >= 29) {
             try {
