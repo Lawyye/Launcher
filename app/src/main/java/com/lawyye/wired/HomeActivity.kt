@@ -65,6 +65,11 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
     private var downListAtTop = true
     private var downOnShadeList = false
     private var shadeListAtBottom = true
+    private var topInset = 0
+    private var downX = 0f
+    private var downY = 0f
+    private var trackDrag = false
+    private var flingHandled = false
     private var batteryPct = -1
     private var charging = false
     private var netLabel = "—"
@@ -178,6 +183,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
     private fun applyInsets(insets: WindowInsets) {
         val bars = systemInsets(insets)
         val withIme = systemInsets(insets, true)
+        topInset = bars.top
         content.setPadding(bars.left + dpi(24), bars.top + dpi(8), bars.right + dpi(24), bars.bottom + dpi(10))
         drawer.setInsets(bars, withIme)
         shade.setInsets(bars.top, bars.bottom, bars.left, bars.right)
@@ -241,8 +247,12 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
         val wlp = LinearLayout.LayoutParams(WRAP, WRAP)
         wlp.leftMargin = dpi(10)
         mark.addView(word, wlp)
+        mark.setPadding(0, dpi(10), dpi(24), dpi(10))
+        mark.isClickable = true
+        mark.contentDescription = "Шторка WIRED"
+        mark.setOnClickListener { openShade() }
         val mlp = LinearLayout.LayoutParams(WRAP, WRAP)
-        mlp.topMargin = dpi(14)
+        mlp.topMargin = dpi(4)
         col.addView(mark, mlp)
 
         // clock block
@@ -558,6 +568,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
                 if (abs(dy) < dp(56f) || abs(dy) < abs(dx) * 1.3f || abs(velocityY) < 300f) return false
                 if (drawer.isOpen) {
                     if (dy > 0 && downListAtTop) {
+                        flingHandled = true
                         drawer.close(true)
                         return true
                     }
@@ -565,18 +576,14 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
                 }
                 if (shade.isOpen) {
                     if (dy < 0 && (!downOnShadeList || shadeListAtBottom)) {
+                        flingHandled = true
                         shade.close(true)
                         return true
                     }
                     return false
                 }
-                if (dy < 0) {
-                    openDrawer()
-                } else if (prefs.ownShade) {
-                    shade.open()
-                } else {
-                    expandNotifications()
-                }
+                flingHandled = true
+                if (dy < 0) openDrawer() else openShade()
                 return true
             }
         })
@@ -600,13 +607,32 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            downX = ev.rawX
+            downY = ev.rawY
+            flingHandled = false
+            trackDrag = !drawer.isOpen && !shade.isOpen && ev.rawY > topInset + dp(8f)
             gestureOnScroller = drawer.isOpen && drawer.isTouchOnScroller(ev.rawX, ev.rawY)
             downListAtTop = drawer.isAtTop()
             downOnShadeList = shade.isOpen && shade.isTouchOnList(ev.rawX, ev.rawY)
             shadeListAtBottom = shade.listAtBottom()
         }
         if (!gestureOnScroller) flingDetector.onTouchEvent(ev)
+        if (ev.actionMasked == MotionEvent.ACTION_UP && trackDrag && !flingHandled) {
+            // a slow, deliberate drag also opens the drawer (up) or the shade (down)
+            val dx = ev.rawX - downX
+            val dy = ev.rawY - downY
+            if (abs(dy) > dp(90f) && abs(dy) > abs(dx) * 1.5f) {
+                val handled = super.dispatchTouchEvent(ev)
+                if (dy < 0) openDrawer() else openShade()
+                return handled
+            }
+        }
         return super.dispatchTouchEvent(ev)
+    }
+
+    private fun openShade() {
+        if (drawer.isOpen) return
+        if (prefs.ownShade) shade.open() else expandNotifications()
     }
 
     @SuppressLint("WrongConstant", "PrivateApi")
@@ -653,7 +679,10 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
     }
 
     private fun maybeWelcome() {
-        if (prefs.welcomeShown) return
+        if (prefs.welcomeShown) {
+            maybeShadeHint()
+            return
+        }
         prefs.welcomeShown = true
         val d = WiredDialog(this, accent)
             .header(null, "WIRED 2.0", "layer 07 — personal node")
@@ -665,8 +694,22 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
             )
         if (!HomeRole.isDefault(this)) d.option(R.drawable.ic_home, "Сделать главным экраном") { HomeRole.request(this) }
         d.option(R.drawable.ic_image, "Поставить свою картинку") { openComposer() }
-        d.option(R.drawable.ic_check, "Начать") {}
+        d.option(R.drawable.ic_check, "Начать") { prefs.shadeHintShown = true }
         d.show()
+    }
+
+    private fun maybeShadeHint() {
+        if (prefs.shadeHintShown) return
+        prefs.shadeHintShown = true
+        WiredDialog(this, accent)
+            .header(null, "Шторка WIRED", "новое")
+            .message(
+                "Свайп вниз из середины экрана или тап по «WIRED» вверху.\n\n" +
+                    "Свайп от самого верхнего края — это шторка Samsung: этот жест система забирает себе раньше любого приложения."
+            )
+            .option(R.drawable.ic_arrow_down, "Открыть шторку") { openShade() }
+            .option(R.drawable.ic_check, "Понятно") {}
+            .show()
     }
 
     // ------------------------------------------------------------------ hosts

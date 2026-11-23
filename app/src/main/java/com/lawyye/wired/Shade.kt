@@ -139,9 +139,14 @@ object NotifHub {
 
     fun component(ctx: Context) = ComponentName(ctx, WiredNotificationListener::class.java)
 
-    fun hasAccess(ctx: Context): Boolean {
-        val s = Settings.Secure.getString(ctx.contentResolver, "enabled_notification_listeners") ?: return false
-        return s.contains(ctx.packageName + "/")
+    fun hasAccess(ctx: Context): Boolean = try {
+        if (Build.VERSION.SDK_INT >= 27) {
+            ctx.getSystemService(NotificationManager::class.java)?.isNotificationListenerAccessGranted(component(ctx)) == true
+        } else {
+            Settings.Secure.getString(ctx.contentResolver, "enabled_notification_listeners")?.contains(ctx.packageName + "/") == true
+        }
+    } catch (t: Throwable) {
+        WiredNotificationListener.instance != null
     }
 
     fun openAccess(act: Activity) {

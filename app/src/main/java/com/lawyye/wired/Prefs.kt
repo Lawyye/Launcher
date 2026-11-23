@@ -200,6 +200,10 @@ class Prefs(ctx: Context) {
         get() = bool("welcome2", false)
         set(v) = put("welcome2", v)
 
+    var shadeHintShown: Boolean
+        get() = bool("shade_hint", false)
+        set(v) = put("shade_hint", v)
+
     val styleVersion: Int get() = int("style_version", 0)
 
     fun bumpStyle() = put("style_version", styleVersion + 1)
