@@ -254,18 +254,15 @@ class SettingsActivity : Activity() {
             .show()
     }
 
+    /** Accessibility settings, with WIRED's row highlighted where the settings app supports it. */
     private fun openAccessibility() {
-        if (Build.VERSION.SDK_INT >= 33) {
-            try {
-                val i = Intent(Settings.ACTION_ACCESSIBILITY_DETAILS_SETTINGS)
-                i.putExtra(Intent.EXTRA_COMPONENT_NAME, WiredShadeService.component(this).flattenToString())
-                startActivity(i)
-                return
-            } catch (t: Throwable) {
-                // fall back to the list
-            }
-        }
-        AppActions.safeStart(this, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        val i = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+        val key = WiredShadeService.component(this).flattenToString()
+        val args = Bundle()
+        args.putString(":settings:fragment_args_key", key)
+        i.putExtra(":settings:fragment_args_key", key)
+        i.putExtra(":settings:show_fragment_args", args)
+        AppActions.safeStart(this, i)
     }
 
     /** The crash log, to copy and send when something breaks — the text names the exact line. */
