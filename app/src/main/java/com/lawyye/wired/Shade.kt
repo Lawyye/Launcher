@@ -216,11 +216,12 @@ object NotifHub {
         WiredNotificationListener.instance != null
     }
 
-    fun openAccess(act: Activity) {
+    fun openAccess(act: Context) {
         if (Build.VERSION.SDK_INT >= 30) {
             try {
                 val i = Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
                 i.putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, component(act).flattenToString())
+                if (act !is Activity) i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 act.startActivity(i)
                 return
             } catch (t: Throwable) {
@@ -230,10 +231,10 @@ object NotifHub {
         AppActions.safeStart(act, Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
     }
 
-    fun openAppInfo(act: Activity) =
+    fun openAppInfo(act: Context) =
         AppActions.safeStart(act, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + act.packageName)))
 
-    fun open(act: Activity, item: NotifItem) {
+    fun open(act: Context, item: NotifItem) {
         val pi = item.intent ?: return
         try {
             if (Build.VERSION.SDK_INT >= 34) {
@@ -281,12 +282,18 @@ object NotifHub {
  * away (Samsung keeps its own shade inside other apps; no launcher can replace that one).
  */
 @SuppressLint("ViewConstructor")
-class QuickPanelView(private val act: Activity, private val host: Host) : FrameLayout(act) {
+class QuickPanelView(private val act: Context, private val host: Host) : FrameLayout(act) {
 
     interface Host {
         fun systemShade()
         fun closeShade()
+
+        /** An activity is about to open from the shade (a settings panel, an app). */
+        fun beforeLaunch() {}
     }
+
+    /** Runs when the close animation has finished (the overlay window is removed then). */
+    var onClosed: (() -> Unit)? = null
 
     private class Toggle(val icon: Int, val title: String, val tile: FrameLayout, val iconView: ImageView)
 
@@ -356,7 +363,7 @@ class QuickPanelView(private val act: Activity, private val host: Host) : FrameL
         tcol.addView(date)
         head.addView(tcol, LinearLayout.LayoutParams(0, WRAP, 1f))
         head.addView(act.iconButton(R.drawable.ic_gear, "Системные настройки") {
-            AppActions.safeStart(act, Intent(Settings.ACTION_SETTINGS))
+            start(Intent(Settings.ACTION_SETTINGS))
         })
         val sys = act.iconButton(R.drawable.ic_arrow_down, "Системная шторка") { host.systemShade() }
         (sys.layoutParams as LinearLayout.LayoutParams).leftMargin = act.dpi(8)
@@ -493,10 +500,14 @@ class QuickPanelView(private val act: Activity, private val host: Host) : FrameL
         stopListening()
         if (animated) {
             animate().alpha(0f).translationY(-height * 0.08f).setDuration(200L).setInterpolator(DecelerateInterpolator())
-                .withEndAction { visibility = GONE }.start()
+                .withEndAction {
+                    visibility = GONE
+                    onClosed?.invoke()
+                }.start()
         } else {
             animate().cancel()
             visibility = GONE
+            onClosed?.invoke()
         }
     }
 
@@ -643,7 +654,7 @@ class QuickPanelView(private val act: Activity, private val host: Host) : FrameL
     private fun onToggle(title: String) {
         when (title) {
             "Wi-Fi" -> panel(Settings.Panel.ACTION_WIFI, Settings.ACTION_WIFI_SETTINGS)
-            "Bluetooth" -> AppActions.safeStart(act, Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+            "Bluetooth" -> start(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
             "Интернет" -> panel(Settings.Panel.ACTION_INTERNET_CONNECTIVITY, Settings.ACTION_WIRELESS_SETTINGS)
             "Фонарик" -> {
                 val id = torchId
@@ -665,7 +676,7 @@ class QuickPanelView(private val act: Activity, private val host: Host) : FrameL
                     refreshToggles()
                 } else {
                     act.toast("Разреши WIRED управлять режимом «Не беспокоить»")
-                    AppActions.safeStart(act, Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                    start(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
                 }
             }
             "Поворот" -> {
@@ -677,8 +688,8 @@ class QuickPanelView(private val act: Activity, private val host: Host) : FrameL
                     requestWriteSettings()
                 }
             }
-            "Геолокация" -> AppActions.safeStart(act, Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
-            "Экономия" -> AppActions.safeStart(act, Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS))
+            "Геолокация" -> start(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+            "Экономия" -> start(Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS))
         }
     }
 
@@ -693,24 +704,32 @@ class QuickPanelView(private val act: Activity, private val host: Host) : FrameL
             "Экономия" -> Settings.ACTION_BATTERY_SAVER_SETTINGS
             else -> Settings.ACTION_SETTINGS
         }
-        AppActions.safeStart(act, Intent(action))
+        start(Intent(action))
+    }
+
+    private fun start(i: Intent) {
+        host.beforeLaunch()
+        AppActions.safeStart(act, i)
     }
 
     private fun panel(panelAction: String, fallback: String) {
         if (Build.VERSION.SDK_INT >= 29) {
+            host.beforeLaunch()
+            val i = Intent(panelAction)
+            if (act !is Activity) i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             try {
-                act.startActivity(Intent(panelAction))
+                act.startActivity(i)
                 return
             } catch (t: Throwable) {
                 // no panel on this build
             }
         }
-        AppActions.safeStart(act, Intent(fallback))
+        start(Intent(fallback))
     }
 
     private fun requestWriteSettings() {
         act.toast("Разреши WIRED менять настройки — для яркости и поворота")
-        AppActions.safeStart(act, Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + act.packageName)))
+        start(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + act.packageName)))
     }
 
     // ------------------------------------------------------------ sliders
@@ -854,8 +873,14 @@ class QuickPanelView(private val act: Activity, private val host: Host) : FrameL
         access.addView(m, mlp)
         val row = LinearLayout(act)
         row.orientation = LinearLayout.HORIZONTAL
-        row.addView(act.primaryButton("Дать доступ", accent) { NotifHub.openAccess(act) }, LinearLayout.LayoutParams(0, act.dpi(44), 1f))
-        val info = act.ghostButton("Сведения") { NotifHub.openAppInfo(act) }
+        row.addView(act.primaryButton("Дать доступ", accent) {
+            host.beforeLaunch()
+            NotifHub.openAccess(act)
+        }, LinearLayout.LayoutParams(0, act.dpi(44), 1f))
+        val info = act.ghostButton("Сведения") {
+            host.beforeLaunch()
+            NotifHub.openAppInfo(act)
+        }
         val ilp = LinearLayout.LayoutParams(WRAP, act.dpi(44))
         ilp.leftMargin = act.dpi(10)
         row.addView(info, ilp)

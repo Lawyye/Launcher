@@ -3,6 +3,7 @@ package com.lawyye.wired
 import android.app.Activity
 import android.content.Intent
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
@@ -103,6 +104,13 @@ class SettingsActivity : Activity() {
         // ------------------------------------------------ shade
         val sh = Group(this, "шторка")
         sh.add(switchRow(R.drawable.ic_arrow_down, "Своя шторка WIRED по свайпу вниз", prefs.ownShade) { prefs.ownShade = it })
+        val topOn = WiredShadeService.isEnabled(this)
+        sh.add(settingsRow(R.drawable.ic_arrow_down, "Шторка WIRED сверху в любом приложении", accent,
+            value = if (topOn) "включена" else "выключена") { topShadeHelp(topOn) })
+        sh.add(segRow(R.drawable.ic_resize, "Где ловить свайп сверху", listOf("весь верх", "левая половина", "правая половина"), prefs.topZone) {
+            prefs.topZone = it
+            WiredShadeService.refresh()
+        })
         sh.add(settingsRow(R.drawable.ic_bell, "Доступ к уведомлениям", accent,
             value = if (NotifHub.hasAccess(this)) "есть" else "нет") { NotifHub.openAccess(this) })
         sh.add(settingsRow(R.drawable.ic_sun, "Яркость и поворот из шторки", accent,
@@ -110,8 +118,8 @@ class SettingsActivity : Activity() {
             AppActions.safeStart(this, Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, android.net.Uri.parse("package:$packageName")))
         })
         col.addView(sh)
-        val shHint = meta("если доступ не включается: Сведения о WIRED → ⋮ → «Разрешить ограниченные настройки». " +
-            "Внутри других приложений сверху остаётся шторка Samsung — её не может заменить ни один лаунчер.")
+        val shHint = meta("свайп от верхнего края ловит полоска над строкой состояния (служба специальных возможностей WIRED). " +
+            "Шторка Samsung — стрелка вверху шторки WIRED, или оставь ей половину края. На заблокированном экране всегда шторка Samsung.")
         shHint.setLineSpacing(0f, 1.4f)
         shHint.setPadding(dpi(4), dpi(10), 0, 0)
         col.addView(shHint)
@@ -218,6 +226,46 @@ class SettingsActivity : Activity() {
         lic.setPadding(dpi(4), dpi(14), 0, 0)
         lic.setLineSpacing(0f, 1.4f)
         col.addView(lic)
+    }
+
+    /**
+     * How to switch the top-edge shade on. Android 13+ greys out accessibility services of apps
+     * installed from a file until "Allow restricted settings" is chosen in the app's info page.
+     */
+    private fun topShadeHelp(on: Boolean) {
+        val d = WiredDialog(this, accent).header(null, "Шторка сверху", if (on) "включена" else "два шага, один раз")
+        if (on) {
+            d.message("Свайп вниз от верхнего края в любом приложении открывает шторку WIRED.\n\nВыключить — в специальных возможностях.")
+                .option(R.drawable.ic_gear, "Специальные возможности") { openAccessibility() }
+                .option(R.drawable.ic_check, "Хорошо") {}
+                .show()
+            return
+        }
+        d.message(
+            "1. «Специальные возможности» → «Установленные приложения» → «Шторка WIRED» → включить.\n\n" +
+                "2. Если переключатель серый: «Сведения о WIRED» → ⋮ вверху справа → «Разрешить ограниченные настройки», " +
+                "потом снова шаг 1. Android так защищает приложения, поставленные из файла.\n\n" +
+                "Служба не читает экран: она только ловит свайп по полоске над строкой состояния.",
+        )
+            .option(R.drawable.ic_gear, "Специальные возможности") { openAccessibility() }
+            .option(R.drawable.ic_info, "Сведения о WIRED") {
+                AppActions.safeStart(this, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName")))
+            }
+            .show()
+    }
+
+    private fun openAccessibility() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            try {
+                val i = Intent(Settings.ACTION_ACCESSIBILITY_DETAILS_SETTINGS)
+                i.putExtra(Intent.EXTRA_COMPONENT_NAME, WiredShadeService.component(this).flattenToString())
+                startActivity(i)
+                return
+            } catch (t: Throwable) {
+                // fall back to the list
+            }
+        }
+        AppActions.safeStart(this, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
     }
 
     /** The crash log, to copy and send when something breaks — the text names the exact line. */

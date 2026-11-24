@@ -143,6 +143,11 @@ class Prefs(private val sp: SharedPreferences, private val filesDir: File) {
         get() = bool("own_shade", true)
         set(v) = put("own_shade", v)
 
+    /** Where along the top edge a swipe down opens the WIRED shade over other apps. */
+    var topZone: Int
+        get() = int("top_zone", ZONE_FULL)
+        set(v) = put("top_zone", v)
+
     var autoKeyboard: Boolean
         get() = bool("auto_keyboard", false)
         set(v) = put("auto_keyboard", v)
@@ -288,6 +293,10 @@ class Prefs(private val sp: SharedPreferences, private val filesDir: File) {
 
         const val DRAWER_GRID = 0
         const val DRAWER_LIST = 1
+
+        const val ZONE_FULL = 0
+        const val ZONE_LEFT = 1
+        const val ZONE_RIGHT = 2
 
         const val MAX_DOCK = 5
         const val MAX_CRT = 8

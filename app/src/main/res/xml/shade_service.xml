@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The service reads no screen content: it only lays a thin strip over the status bar and, while
+    the WIRED shade is open, listens for another window coming to the front to close it.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/shade_service_description"
+    android:notificationTimeout="100"
+    android:settingsActivity="com.lawyye.wired.SettingsActivity"
+    android:summary="@string/shade_service_summary" />

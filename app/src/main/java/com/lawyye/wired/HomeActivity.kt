@@ -855,7 +855,8 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
 
     override fun systemShade() {
         shade.close(false)
-        expandNotifications()
+        // the official way through the WIRED shade service when it runs, else the old reflection
+        if (!WiredShadeService.showSystemShade()) expandNotifications()
     }
 
     override fun closeShade() = shade.close(true)

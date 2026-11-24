@@ -78,6 +78,20 @@
             android:screenOrientation="portrait"
             android:theme="@style/Theme.Wired.Settings" />
 
+        <!-- the WIRED shade over every app (a swipe down from the top edge); off until the user enables it -->
+        <service
+            android:name=".WiredShadeService"
+            android:exported="true"
+            android:label="Шторка WIRED"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/shade_service" />
+        </service>
+
         <service
             android:name=".WiredNotificationListener"
             android:exported="true"

@@ -80,11 +80,15 @@ object AppActions {
         }
     }
 
-    fun safeStart(act: Activity, intent: Intent) {
-        try {
-            act.startActivity(intent)
+    /** Starts an activity from a screen or from the shade service (which needs a new task). */
+    fun safeStart(ctx: Context, intent: Intent): Boolean {
+        if (ctx !is Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            ctx.startActivity(intent)
+            true
         } catch (e: Throwable) {
-            act.toast("Нет приложения для этого действия")
+            ctx.toast("Нет приложения для этого действия")
+            false
         }
     }
 }

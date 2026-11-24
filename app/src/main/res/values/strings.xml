@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">WIRED</string>
+    <string name="shade_service_summary">Свайп вниз от верхнего края открывает шторку WIRED в любом приложении</string>
+    <string name="shade_service_description">Шторка WIRED поверх любых приложений: тонкая полоска над строкой состояния ловит свайп вниз и открывает шторку WIRED с уведомлениями, переключателями, яркостью и плеером. Шторка Samsung остаётся доступна кнопкой со стрелкой. Служба не читает содержимое экрана и не работает на заблокированном экране.</string>
 </resources>
