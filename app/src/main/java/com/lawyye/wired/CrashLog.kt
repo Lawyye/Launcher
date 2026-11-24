@@ -74,7 +74,29 @@ object CrashLog {
             val exits = exits(ctx)
             if (exits.isNotEmpty()) sb.append("== как завершался WIRED (по данным системы) ==\n").append(exits)
         }
-        return if (sb.isEmpty()) "" else header() + "\n" + sb
+        if (sb.isEmpty()) return ""
+        return header() + "\n" + sb + "\n== сейчас ==\n" + now(ctx)
+    }
+
+    /** Memory and services at the moment the log is opened. */
+    private fun now(ctx: Context): String {
+        val rt = Runtime.getRuntime()
+        val heap = (rt.totalMemory() - rt.freeMemory()) / MB
+        val native = android.os.Debug.getNativeHeapAllocatedSize() / MB
+        val pss = android.os.Debug.getPss() / 1024
+        return "память WIRED: " + pss + " МБ всего (Java " + heap + ", native " + native +
+            ", иконки " + IconCache.bytes() / MB + ")\n" +
+            "шторка сверху: " + (if (WiredShadeService.isEnabled(ctx)) "включена" else "выключена") + "\n" +
+            "доступ к уведомлениям: " + (if (NotifHub.hasAccess(ctx)) "есть" else "нет") + "\n"
+    }
+
+    private const val MB = 1024 * 1024
+
+    private fun importanceName(i: Int): String = when {
+        i <= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND -> "на экране"
+        i <= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_PERCEPTIBLE -> "заметен"
+        i <= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_SERVICE -> "служба"
+        else -> "в фоне"
     }
 
     @android.annotation.TargetApi(30)
@@ -88,6 +110,9 @@ object CrashLog {
         val sb = StringBuilder()
         for (e in list) {
             sb.append(stamp(e.timestamp)).append(" · ").append(reasonName(e.reason))
+            // where WIRED stood when it died, and how big it was: tells whether its own size mattered
+            sb.append(" · ").append(importanceName(e.importance))
+            if (e.rss > 0) sb.append(" · ").append(e.rss / 1024).append(" МБ")
             e.description?.takeIf { it.isNotBlank() }?.let { sb.append(" · ").append(it) }
             sb.append("\n")
             // a freeze (ANR) comes with the main thread's stack: the first lines name the culprit
@@ -117,6 +142,9 @@ object CrashLog {
         ApplicationExitInfo.REASON_EXIT_SELF -> "завершился сам"
         ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "завершился вслед за другим процессом"
         ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "не смог запуститься"
+        ApplicationExitInfo.REASON_FREEZER -> "заморожен системой"
+        ApplicationExitInfo.REASON_PACKAGE_STATE_CHANGE -> "изменилось состояние пакета"
+        ApplicationExitInfo.REASON_PACKAGE_UPDATED -> "обновление WIRED"
         else -> "причина $r"
     }
 

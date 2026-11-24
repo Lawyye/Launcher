@@ -262,6 +262,9 @@ object IconCache {
     }
 
     /** The system is short of memory and the launcher is in the background: keep only half. */
+    /** Bytes the icon cache holds now, for the crash log. */
+    fun bytes(): Int = cache.size()
+
     fun trim() {
         warmGeneration++
         cache.trimToSize(cache.maxSize() / 2)
