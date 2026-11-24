@@ -235,12 +235,36 @@ object IconCache {
         }
     }
 
-    /** Fills the cache in the background right after the app list loads. */
+    @Volatile
+    private var warmGeneration = 0
+
+    /**
+     * Fills the cache in the background, in the order given (dock first, then the drawer).
+     * Runs as one task on one thread, so icons a visible row asks for are never stuck behind it;
+     * a newer call (apps changed again) stops the older one. Never warms more than fits the cache.
+     */
     fun prewarm(ctx: Context, apps: List<AppEntry>, px: Int) {
+        val gen = ++warmGeneration
+        val perIcon = px.toLong() * px * 4
+        val room = if (perIcon > 0) (cache.maxSize() * 0.8 / perIcon).toInt() else 0
+        val todo = apps.asSequence().filter { cache.get(cacheKey(it, px)) == null }.take(room).toList()
+        if (todo.isEmpty()) return
         val appCtx = ctx.applicationContext
-        for (a in apps) {
-            if (cache.get(cacheKey(a, px)) == null) load(appCtx, a, px) {}
+        pool.execute {
+            for (a in todo) {
+                if (gen != warmGeneration) return@execute
+                val k = cacheKey(a, px)
+                if (cache.get(k) != null) continue
+                val bmp = render(appCtx, a, px) ?: continue
+                main.post { if (cache.get(k) == null) cache.put(k, bmp) }
+            }
         }
+    }
+
+    /** The system is short of memory and the launcher is in the background: keep only half. */
+    fun trim() {
+        warmGeneration++
+        cache.trimToSize(cache.maxSize() / 2)
     }
 
     private fun render(ctx: Context, app: AppEntry, px: Int): Bitmap? = try {

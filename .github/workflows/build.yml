@@ -21,20 +21,40 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build release APK
+      - name: Unit tests and release APK
         run: |
           set -o pipefail
           chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace assembleRelease 2>&1 | tee build.log
+          # tests run first: a failing test stops the build, so a broken version is never released
+          ./gradlew --no-daemon --stacktrace testReleaseUnitTest assembleRelease 2>&1 | tee build.log
 
       - name: Report build errors
         if: failure()
         run: |
-          msg=$(grep -E "^e: |error:|What went wrong|^> |^\* What|Exception" build.log | head -80 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          msg=$(grep -E "^e: |error:|What went wrong|^> |^\* What|Exception|FAILED|expected" build.log | head -80 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
           echo "::error title=Gradle build failed::${msg}"
 
+      - name: Lint report
+        continue-on-error: true
+        run: |
+          ./gradlew --no-daemon lintRelease 2>&1 | tail -20
+          f=app/build/reports/lint-results-release.txt
+          if [ -f "$f" ]; then echo "::notice title=Lint::$(tail -1 "$f")"; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports
+          path: |
+            app/build/reports/lint-results-release.html
+            app/build/reports/tests/
+          if-no-files-found: ignore
+
       - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk wired-launcher.apk
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk wired-launcher.apk
+          # R8 renames classes in the release; this file turns a crash-log stack back into real names
+          cp app/build/outputs/mapping/release/mapping.txt wired-mapping.txt
 
       - uses: actions/upload-artifact@v4
         with:
@@ -47,7 +67,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v1.0.${{ github.run_number }}"
-          gh release create "$TAG" wired-launcher.apk \
+          gh release create "$TAG" wired-launcher.apk wired-mapping.txt \
             --title "WIRED $TAG" \
             --notes "Automatic build of ${GITHUB_SHA::7}. Download wired-launcher.apk on your phone and install it." \
             --latest

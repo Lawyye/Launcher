@@ -208,11 +208,39 @@ class SettingsActivity : Activity() {
         sys.add(settingsRow(R.drawable.ic_sparkle, "Системные настройки", accent) {
             AppActions.safeStart(this, Intent(Settings.ACTION_SETTINGS))
         })
+        val crashAt = CrashLog.lastCrashTime(this)
+        sys.add(settingsRow(R.drawable.ic_pulse, "Журнал сбоев", accent,
+            value = if (crashAt == null) "чисто" else android.text.format.DateFormat.format("d MMM, HH:mm", crashAt).toString()) {
+            showCrashLog()
+        })
         col.addView(sys)
         val lic = meta("шрифты: Space Grotesk, Manrope, IBM Plex Mono — SIL Open Font License 1.1")
         lic.setPadding(dpi(4), dpi(14), 0, 0)
         lic.setLineSpacing(0f, 1.4f)
         col.addView(lic)
+    }
+
+    /** The crash log, to copy and send when something breaks — the text names the exact line. */
+    private fun showCrashLog() {
+        val text = CrashLog.report(this)
+        val d = WiredDialog(this, accent).header(null, "Журнал сбоев", "хранится только на телефоне")
+        if (text.isEmpty()) {
+            d.message("Сбоев не было.").option(R.drawable.ic_check, "Хорошо") {}.show()
+            return
+        }
+        d.message(if (text.length > 4000) text.take(4000) + "\n…" else text)
+            .option(R.drawable.ic_check, "Скопировать") {
+                val cm = getSystemService(android.content.ClipboardManager::class.java)
+                cm?.setPrimaryClip(android.content.ClipData.newPlainText("WIRED crash log", text))
+                toast("Скопировано — пришли этот текст при обращении")
+            }
+            .option(R.drawable.ic_trash, "Очистить", danger = true) {
+                CrashLog.clear(this)
+                val y = scroll.scrollY
+                build()
+                scroll.post { scroll.scrollTo(0, y) }
+            }
+            .show()
     }
 
     private fun applyWallpaper(which: Int) {

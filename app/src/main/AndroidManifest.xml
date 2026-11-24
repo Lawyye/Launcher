@@ -23,8 +23,16 @@
         </intent>
     </queries>
 
+    <!--
+        Backup: settings (dock, hidden apps, look) go to the Google backup so a new phone restores
+        them; the pictures in files/ never leave the phone (excluded below). A direct transfer to a
+        new phone by cable or Smart Switch copies everything.
+    -->
     <application
+        android:name=".WiredApp"
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"

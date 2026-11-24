@@ -15,6 +15,7 @@ import android.os.Looper
 import android.provider.MediaStore
 import java.io.File
 import java.io.FileOutputStream
+import java.lang.ref.WeakReference
 import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -119,8 +120,7 @@ object ImageStore {
         val stream = cr.openInputStream(uri) ?: error("no stream")
         stream.use { BitmapFactory.decodeStream(it, null, bounds) }
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) error("not an image")
-        var sample = 1
-        while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxEdge) sample *= 2
+        val sample = Images.sampleFor(bounds.outWidth, bounds.outHeight, maxEdge)
         val opts = BitmapFactory.Options()
         opts.inSampleSize = sample
         var bmp: Bitmap = cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
@@ -149,18 +149,36 @@ object ImageStore {
     }
 
     /** Decodes [f] so its long edge is about [maxEdge] (never decodes more pixels than needed). */
-    fun decode(f: File, maxEdge: Int): Bitmap? = try {
+    fun decode(f: File, maxEdge: Int): Bitmap? = decodeShared(f, maxEdge)
+
+    /**
+     * The last decoded picture, weakly held. The home screen keeps its ~20 MB background alive,
+     * so the editor or the lock-screen renderer asking for the same file at the same sample size
+     * gets that very bitmap instead of a second copy. Decoded bitmaps are immutable, so sharing
+     * them is safe.
+     */
+    private class Shared(val path: String, val stamp: Long, val length: Long, val sample: Int, val bmp: WeakReference<Bitmap>)
+
+    @Volatile
+    private var shared: Shared? = null
+
+    private fun decodeShared(f: File, maxEdge: Int): Bitmap? = try {
         if (!f.exists()) {
             null
         } else {
             val o = BitmapFactory.Options()
             o.inJustDecodeBounds = true
             BitmapFactory.decodeFile(f.path, o)
-            var s = 1
-            while (max(o.outWidth, o.outHeight) / (s * 2) >= maxEdge) s *= 2
-            val o2 = BitmapFactory.Options()
-            o2.inSampleSize = s
-            BitmapFactory.decodeFile(f.path, o2)
+            val sample = Images.sampleFor(o.outWidth, o.outHeight, maxEdge)
+            val stamp = f.lastModified()
+            val length = f.length()
+            val s = shared
+            val hit = if (s != null && s.path == f.path && s.stamp == stamp && s.length == length && s.sample == sample) s.bmp.get() else null
+            hit ?: run {
+                val o2 = BitmapFactory.Options()
+                o2.inSampleSize = sample
+                BitmapFactory.decodeFile(f.path, o2)?.also { shared = Shared(f.path, stamp, length, sample, WeakReference(it)) }
+            }
         }
     } catch (t: Throwable) {
         null
@@ -168,7 +186,7 @@ object ImageStore {
 
     fun decodeAsync(f: File, maxEdge: Int, done: (Bitmap?) -> Unit) {
         io.execute {
-            val b = decode(f, maxEdge)
+            val b = decodeShared(f, maxEdge)
             main.post { done(b) }
         }
     }

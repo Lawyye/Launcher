@@ -4,11 +4,16 @@ import android.content.Context
 import android.content.SharedPreferences
 import java.io.File
 
-/** All launcher settings. Schema 2 = WIRED 2.0; older installs are migrated once in [migrate]. */
-class Prefs(ctx: Context) {
+/**
+ * All launcher settings. Schema 2 = WIRED 2.0; older installs are migrated once in [migrate].
+ * The storage and the files folder are passed in, so tests can run it on plain JVM fakes.
+ */
+class Prefs(private val sp: SharedPreferences, private val filesDir: File) {
 
-    private val app = ctx.applicationContext
-    private val sp: SharedPreferences = app.getSharedPreferences("wired", Context.MODE_PRIVATE)
+    constructor(ctx: Context) : this(
+        ctx.applicationContext.getSharedPreferences("wired", Context.MODE_PRIVATE),
+        ctx.applicationContext.filesDir,
+    )
 
     init {
         if (sp.getInt("schema", 0) < SCHEMA) migrate()
@@ -65,7 +70,7 @@ class Prefs(ctx: Context) {
         get() = sp.getLong("image_version", 0L)
         set(v) = sp.edit().putLong("image_version", v).apply()
 
-    fun imageFile(): File = File(app.filesDir, "wallpaper.jpg")
+    fun imageFile(): File = File(filesDir, "wallpaper.jpg")
 
     // ------------------------------------------------------------ clock
 
@@ -154,24 +159,38 @@ class Prefs(ctx: Context) {
         get() = sp.getStringSet("hidden", null)?.toSet() ?: emptySet()
         set(v) = sp.edit().putStringSet("hidden", HashSet(v)).apply()
 
-    fun launchCounts(): Map<String, Int> {
-        val raw = sp.getString("launch_counts", null) ?: return emptyMap()
-        val out = HashMap<String, Int>()
-        for (line in raw.split('\n')) {
-            val tab = line.lastIndexOf('\t')
-            if (tab <= 0) continue
-            val n = line.substring(tab + 1).toIntOrNull() ?: continue
-            out[line.substring(0, tab)] = n
-        }
-        return out
-    }
+    /** The stored form, cheap to compare: the drawer is rebuilt only when it changed. */
+    fun launchCountsRaw(): String = sp.getString("launch_counts", null).orEmpty()
+
+    fun launchCounts(): Map<String, Int> = Counts.parse(sp.getString("launch_counts", null))
 
     fun countLaunch(key: String) {
         val m = HashMap(launchCounts())
         m[key] = (m[key] ?: 0) + 1
-        // keep the map small: forget the least used when it grows
-        val kept = if (m.size > 160) m.entries.sortedByDescending { it.value }.take(120).associate { it.key to it.value } else m
-        sp.edit().putString("launch_counts", kept.entries.joinToString("\n") { it.key + "\t" + it.value }).apply()
+        sp.edit().putString("launch_counts", Counts.serialize(m)).apply()
+    }
+
+    /**
+     * Re-points dock, hidden and launch-count entries whose activity was renamed by an app update
+     * (see [AppKeys.heal]). Returns true when something was repaired.
+     */
+    fun healKeys(current: Collection<String>): Boolean {
+        val dockNow = dock
+        val hiddenNow = hidden
+        val counts = launchCounts()
+        val map = AppKeys.heal(dockNow + hiddenNow + counts.keys, current)
+        if (map.isEmpty()) return false
+        val merged = HashMap<String, Int>()
+        for ((k, v) in counts) {
+            val nk = map[k] ?: k
+            merged[nk] = (merged[nk] ?: 0) + v
+        }
+        sp.edit()
+            .putString("dock", dockNow.map { map[it] ?: it }.distinct().take(MAX_DOCK).joinToString("\n"))
+            .putStringSet("hidden", HashSet(hiddenNow.map { map[it] ?: it }))
+            .putString("launch_counts", Counts.serialize(merged))
+            .apply()
+        return true
     }
 
     // ------------------------------------------------------------ CRT window
@@ -192,7 +211,7 @@ class Prefs(ctx: Context) {
         get() = bool("crt_rotate", true)
         set(v) = put("crt_rotate", v)
 
-    fun crtDir(): File = File(app.filesDir, "crt").also { it.mkdirs() }
+    fun crtDir(): File = File(filesDir, "crt").also { it.mkdirs() }
 
     // ------------------------------------------------------------ misc
 

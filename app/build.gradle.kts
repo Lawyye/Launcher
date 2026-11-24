@@ -52,8 +52,20 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        // JVM unit tests (app/src/test) never touch the real Android; stubs answer with defaults
+        unitTests.isReturnDefaultValues = true
+    }
+
     lint {
+        // CI runs lintRelease and keeps the HTML report as a build artifact (see build.yml);
+        // the release itself is not blocked by lint yet
         abortOnError = false
         checkReleaseBuilds = false
     }
+}
+
+dependencies {
+    // tests only — nothing of this goes into the APK, which still uses only the Android framework
+    testImplementation("junit:junit:4.13.2")
 }

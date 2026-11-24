@@ -70,11 +70,17 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
     private var downY = 0f
     private var trackDrag = false
     private var flingHandled = false
+    private var stolen = false
+    private var drawerSig: String? = null
     private var batteryPct = -1
     private var charging = false
     private var netLabel = "—"
     private var receiversOn = false
     private var netCallback: ConnectivityManager.NetworkCallback? = null
+
+    private companion object {
+        const val DOCK_ICON_DP = 56
+    }
 
     private val dateFmt by lazy { SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()) }
     private val appsListener: () -> Unit = { onAppsChanged() }
@@ -102,7 +108,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
         registerLive()
         updateClock()
         updateInfo()
-        drawer.setApps(AppRepository.apps, prefs.hidden, prefs.launchCounts())
+        syncDrawer(false)
         crt.onVisible(true)
         if (shade.isOpen) shade.refresh()
         if (screenWasOff) {
@@ -219,6 +225,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
         shade.applyStyle(accent)
         buildContent()
         bindDock()
+        warmIcons() // the icon size may have changed with the columns or the drawer mode
         loadImages()
         updateClock()
         updateInfo()
@@ -340,8 +347,21 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
 
     private fun bindDock() {
         val byKey = AppRepository.apps.associateBy { it.key }
-        val apps = prefs.dock.mapNotNull { byKey[it] }.filter { it.key !in prefs.hidden }
-        dock.bind(apps, 56, prefs.iconMode, prefs.dockLabels, accent)
+        val hidden = prefs.hidden
+        val apps = prefs.dock.mapNotNull { byKey[it] }.filter { it.key !in hidden }
+        dock.bind(apps, DOCK_ICON_DP, prefs.iconMode, prefs.dockLabels, accent)
+    }
+
+    /**
+     * Rebuilds the drawer only when its input changed (launch counts after an app was opened,
+     * hidden apps edited in settings) instead of on every return to the home screen.
+     */
+    private fun syncDrawer(force: Boolean) {
+        val hidden = prefs.hidden
+        val sig = prefs.launchCountsRaw() + "\u0000" + hidden.sorted().joinToString("\n")
+        if (!force && sig == drawerSig) return
+        drawerSig = sig
+        drawer.setApps(AppRepository.apps, hidden, prefs.launchCounts())
     }
 
     private fun loadImages() {
@@ -351,7 +371,10 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
             if (ver != loadedImageVersion || backdrop.image == null) {
                 loadedImageVersion = ver
                 val edge = (maxOf(dm.widthPixels, dm.heightPixels) * 1.25f).toInt()
-                ImageStore.decodeAsync(prefs.imageFile(), edge) { b -> if (!isDestroyed) backdrop.image = b }
+                ImageStore.decodeAsync(prefs.imageFile(), edge) { b ->
+                    // the mode may have changed while decoding: don't hold 20 MB nobody draws
+                    if (!isDestroyed && prefs.homeMode == Prefs.HOME_IMAGE) backdrop.image = b
+                }
             }
         } else if (backdrop.image != null) {
             backdrop.image = null
@@ -415,9 +438,30 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
     }
 
     private fun onAppsChanged() {
-        drawer.setApps(AppRepository.apps, prefs.hidden, prefs.launchCounts())
+        val apps = AppRepository.apps
+        if (apps.isNotEmpty()) prefs.healKeys(apps.map { it.key })
+        syncDrawer(true)
         bindDock()
-        IconCache.prewarm(this, AppRepository.apps, dpi(prefs.iconSizeDp))
+        warmIcons()
+    }
+
+    /** Dock icons first, then the most used apps, then the rest — at the size the drawer draws. */
+    private fun warmIcons() {
+        val apps = AppRepository.apps
+        if (apps.isEmpty()) return
+        val counts = prefs.launchCounts()
+        val dockKeys = prefs.dock.toHashSet()
+        val ordered = apps.sortedWith(
+            compareByDescending<AppEntry> { it.key in dockKeys }.thenByDescending { counts[it.key] ?: 0 },
+        )
+        IconCache.prewarm(this, ordered, drawer.iconPx)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // the launcher is in the background and the system is short of memory: give back the
+        // icon cache's spare half rather than be killed and start cold
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) IconCache.trim()
     }
 
     // ------------------------------------------------------------------ live data
@@ -615,17 +659,33 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
             downListAtTop = drawer.isAtTop()
             downOnShadeList = shade.isOpen && shade.isTouchOnList(ev.rawX, ev.rawY)
             shadeListAtBottom = shade.listAtBottom()
+            stolen = false
         }
-        if (!gestureOnScroller) flingDetector.onTouchEvent(ev)
-        if (ev.actionMasked == MotionEvent.ACTION_UP && trackDrag && !flingHandled) {
-            // a slow, deliberate drag also opens the drawer (up) or the shade (down)
+        if (ev.actionMasked == MotionEvent.ACTION_MOVE && trackDrag && !stolen) {
             val dx = ev.rawX - downX
             val dy = ev.rawY - downY
-            if (abs(dy) > dp(90f) && abs(dy) > abs(dx) * 1.5f) {
-                val handled = super.dispatchTouchEvent(ev)
-                if (dy < 0) openDrawer() else openShade()
-                return handled
+            if (abs(dy) > dp(24f) && abs(dy) > abs(dx) * 1.3f) {
+                // A vertical swipe on the home screen belongs to the launcher. Whatever was under the
+                // finger (the CRT window, the dock, the wordmark) gets a cancel now, so it can't also
+                // see the release as a tap (the CRT switched its picture on every swipe) or a long press.
+                stolen = true
+                val cancel = MotionEvent.obtain(ev)
+                cancel.action = MotionEvent.ACTION_CANCEL
+                super.dispatchTouchEvent(cancel)
+                cancel.recycle()
             }
+        }
+        if (!gestureOnScroller) flingDetector.onTouchEvent(ev)
+        if (stolen) {
+            if (ev.actionMasked == MotionEvent.ACTION_UP && !flingHandled) {
+                // a slow, deliberate drag also opens the drawer (up) or the shade (down)
+                val dx = ev.rawX - downX
+                val dy = ev.rawY - downY
+                if (abs(dy) > dp(90f) && abs(dy) > abs(dx) * 1.5f) {
+                    if (dy < 0) openDrawer() else openShade()
+                }
+            }
+            return true
         }
         return super.dispatchTouchEvent(ev)
     }
@@ -756,7 +816,8 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
             d.option(R.drawable.ic_eye_off, "Скрыть") {
                 prefs.hidden = prefs.hidden + app.key
                 prefs.dock = prefs.dock - app.key
-                onAppsChanged()
+                syncDrawer(true)
+                bindDock()
                 toast("Скрыто. Вернуть — в настройках")
             }
             d.option(R.drawable.ic_info, "О приложении") { AppActions.info(this, app) }
@@ -789,6 +850,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
 
     override fun drawerModeChanged(mode: Int) {
         prefs.drawerMode = mode
+        warmIcons()
     }
 
     override fun systemShade() {

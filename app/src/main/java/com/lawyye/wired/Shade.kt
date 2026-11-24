@@ -44,23 +44,26 @@ import android.widget.TextView
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 import kotlin.math.pow
 
 /** Reads the phone's notifications for the WIRED shade (only after the user grants access). */
 class WiredNotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
         instance = this
-        NotifHub.refresh()
+        NotifHub.invalidate()
     }
 
     override fun onListenerDisconnected() {
         if (instance === this) instance = null
-        NotifHub.refresh()
+        NotifHub.invalidate()
     }
 
-    override fun onNotificationPosted(sbn: StatusBarNotification?) = NotifHub.refresh()
+    // Called for every new or updated notification (a player or a download updates every second):
+    // only a flag is set here; the list is rebuilt later, in the background, and only for an open shade.
+    override fun onNotificationPosted(sbn: StatusBarNotification?) = NotifHub.invalidate()
 
-    override fun onNotificationRemoved(sbn: StatusBarNotification?) = NotifHub.refresh()
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) = NotifHub.invalidate()
 
     companion object {
         @Volatile
@@ -81,9 +84,25 @@ class NotifItem(
 )
 
 object NotifHub {
+    private const val MAX_ITEMS = 40
+
+    /** Bursts of updates (a download, a player, a VPN speed meter) are merged into one rebuild. */
+    private const val DEBOUNCE_MS = 300L
+
     private val main = Handler(Looper.getMainLooper())
+    private val io = Executors.newSingleThreadExecutor()
     private val listeners = LinkedHashSet<() -> Unit>()
+
+    // touched only on the io thread
     private val labels = HashMap<String, String>()
+    private val icons = object : LinkedHashMap<String, Drawable>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Drawable>?): Boolean = size > 64
+    }
+
+    // touched only on the main thread
+    private var dirty = true
+    private var scheduled = false
+    private var generation = 0
 
     var items: List<NotifItem> = emptyList()
         private set
@@ -92,12 +111,43 @@ object NotifHub {
 
     fun removeListener(l: () -> Unit) = listeners.remove(l)
 
-    fun refresh() {
+    /** Something changed. While nobody shows notifications this only marks the list as stale. */
+    fun invalidate() = runOnMain {
+        dirty = true
+        if (listeners.isNotEmpty()) schedule(DEBOUNCE_MS)
+    }
+
+    /** The shade opened (or came back): rebuild now if anything changed while it was closed. */
+    fun refresh() = runOnMain {
+        if (dirty) schedule(0L)
+    }
+
+    private fun runOnMain(r: () -> Unit) {
+        if (Looper.myLooper() === Looper.getMainLooper()) r() else main.post(r)
+    }
+
+    private fun schedule(delay: Long) {
+        if (scheduled) {
+            if (delay > 0L) return
+            main.removeCallbacks(rebuild)
+        }
+        scheduled = true
+        main.postDelayed(rebuild, delay)
+    }
+
+    private val rebuild = Runnable {
+        scheduled = false
+        if (listeners.isEmpty()) return@Runnable
+        dirty = false
+        val gen = ++generation
         val s = WiredNotificationListener.instance
-        val list = if (s == null) emptyList() else build(s)
-        main.post {
-            items = list
-            for (l in listeners.toList()) l()
+        io.execute {
+            val list = if (s == null) emptyList() else build(s)
+            main.post {
+                if (gen != generation) return@post
+                items = list
+                for (l in listeners.toList()) l()
+            }
         }
     }
 
@@ -107,25 +157,42 @@ object NotifHub {
         } catch (t: Throwable) {
             return emptyList()
         }
-        return arr.filter { (it.notification.flags and Notification.FLAG_GROUP_SUMMARY) == 0 }
-            .sortedByDescending { it.postTime }
-            .mapNotNull { sbn ->
-                val n = sbn.notification
-                val ex = n.extras
-                val title = ex?.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
-                val text = (ex?.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: ex?.getCharSequence(Notification.EXTRA_TEXT))?.toString().orEmpty()
-                if (title.isBlank() && text.isBlank()) return@mapNotNull null
-                val icon = try {
-                    n.smallIcon?.loadDrawable(s)
-                } catch (t: Throwable) {
-                    null
-                }
+        val out = ArrayList<NotifItem>(MAX_ITEMS)
+        // sort and filter first: icons and labels are loaded only for what is actually shown
+        for (sbn in arr.sortedByDescending { it.postTime }) {
+            if (out.size >= MAX_ITEMS) break
+            val n = sbn.notification ?: continue
+            if ((n.flags and Notification.FLAG_GROUP_SUMMARY) != 0) continue
+            val ex = n.extras
+            val title = ex?.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+            val text = (ex?.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: ex?.getCharSequence(Notification.EXTRA_TEXT))?.toString().orEmpty()
+            if (title.isBlank() && text.isBlank()) continue
+            out.add(
                 NotifItem(
                     sbn.key, label(s, sbn.packageName), title, text, sbn.postTime, n.contentIntent, sbn.isClearable,
-                    (n.flags and Notification.FLAG_AUTO_CANCEL) != 0, icon,
-                )
-            }
-            .take(40)
+                    (n.flags and Notification.FLAG_AUTO_CANCEL) != 0, icon(s, sbn),
+                ),
+            )
+        }
+        return out
+    }
+
+    /** Small icons repeat (every message of one app has the same one): resource icons are cached. */
+    private fun icon(ctx: Context, sbn: StatusBarNotification): Drawable? {
+        val ic = sbn.notification.smallIcon ?: return null
+        val key = if (Build.VERSION.SDK_INT >= 28 && ic.type == android.graphics.drawable.Icon.TYPE_RESOURCE) {
+            ic.resPackage + ":" + ic.resId
+        } else {
+            null
+        }
+        if (key != null) icons[key]?.let { return it }
+        val d = try {
+            ic.loadDrawable(ctx)
+        } catch (t: Throwable) {
+            null
+        } ?: return null
+        if (key != null) icons[key] = d
+        return d
     }
 
     private fun label(ctx: Context, pkg: String): String = labels.getOrPut(pkg) {
@@ -188,6 +255,8 @@ object NotifHub {
         } catch (t: Throwable) {
             // the listener is gone
         }
+        // the row goes away at once instead of waiting for the system callback and the debounce
+        showLocally(items.filter { it.key != key })
     }
 
     fun clearAll() {
@@ -196,6 +265,13 @@ object NotifHub {
         } catch (t: Throwable) {
             // the listener is gone
         }
+        showLocally(items.filter { !it.clearable })
+    }
+
+    private fun showLocally(list: List<NotifItem>) = runOnMain {
+        if (list.size == items.size) return@runOnMain
+        items = list
+        for (l in listeners.toList()) l()
     }
 }
 
@@ -815,7 +891,9 @@ class QuickPanelView(private val act: Activity, private val host: Host) : FrameL
         val tile = FrameLayout(act)
         tile.background = act.rounded(Wired.alpha(accent, 0x1A), 11f)
         val iv = ImageView(act)
-        n.icon?.mutate()?.let {
+        // the cached icon is shared between rows: each row tints its own copy
+        val icon = n.icon
+        (icon?.constantState?.newDrawable(act.resources) ?: icon)?.mutate()?.let {
             it.setTint(accent)
             iv.setImageDrawable(it)
         }

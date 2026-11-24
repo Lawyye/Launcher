@@ -250,6 +250,12 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         rebuild()
     }
 
+    /**
+     * The exact size the drawer draws icons at — the grid size (5 columns cap it at 52dp) or the
+     * 40dp of list rows. Warming the cache at any other size would only waste memory.
+     */
+    val iconPx: Int get() = context.dpi(if (mode == Prefs.DRAWER_LIST) LIST_ICON_DP else iconDp)
+
     fun setApps(all: List<AppEntry>, hidden: Set<String>, counts: Map<String, Int>) {
         apps = all
         this.hidden = hidden
@@ -304,20 +310,21 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         letterRows.clear()
         val q = query.lowercase()
         if (q.isNotEmpty()) {
+            // the query as typed, and the same keys in the other layout ("еудупкфь" → telegram);
+            // a layout match ranks just below a direct match of the same kind
+            val alt = Search.swapLayout(q).takeIf { it != q }
             val ranked = visible.mapNotNull { a ->
-                val idx = a.search.indexOf(q)
-                val rank = when {
-                    idx == 0 -> 0
-                    idx > 0 && !a.search[idx - 1].isLetterOrDigit() -> 1
-                    idx > 0 -> 2
-                    a.searchPkg.contains(q) -> 3
-                    else -> -1
-                }
-                if (rank < 0) null else Triple(a, rank, idx)
-            }.sortedBy { it.second }.take(30)
+                val direct = Search.rank(a.search, a.searchPkg, q)
+                if (direct >= 0) return@mapNotNull Hit(a, direct * 2, a.search.indexOf(q), q.length)
+                if (alt == null) return@mapNotNull null
+                val swapped = Search.rank(a.search, a.searchPkg, alt)
+                if (swapped >= 0) Hit(a, swapped * 2 + 1, a.search.indexOf(alt), alt.length) else null
+            }.sortedBy { it.rank }.take(30)
             out.add(Row.Label("приложения · " + ranked.size, false))
             if (ranked.isEmpty()) out.add(Row.Empty("ничего не найдено · попробуй в сети"))
-            ranked.forEachIndexed { i, (a, _, idx) -> out.add(Row.Result(a, i == 0, if (idx >= 0) idx else 0, if (idx >= 0) q.length else 0)) }
+            ranked.forEachIndexed { i, h ->
+                out.add(Row.Result(h.app, i == 0, if (h.idx >= 0) h.idx else 0, if (h.idx >= 0) h.len else 0))
+            }
             out.add(Row.Label("в сети", false))
             out.add(Row.Action(R.drawable.ic_globe, "Искать «$query» в интернете", 0))
             out.add(Row.Action(R.drawable.ic_map_pin, "Найти «$query» на картах", 1))
@@ -603,7 +610,7 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     }
 
     private fun appRow(cv: View?, app: AppEntry): View {
-        val (row, h) = appLine(if (cv?.getTag(R.drawable.ic_list) == true) cv else null, 40, 56)
+        val (row, h) = appLine(if (cv?.getTag(R.drawable.ic_list) == true) cv else null, LIST_ICON_DP, 56)
         row.setTag(R.drawable.ic_list, true)
         row.setPadding(0, 0, if (rail.visibility == VISIBLE) context.dpi(26) else 0, 0)
         row.background = context.ripple(null, 14f, accent)
@@ -611,7 +618,7 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         h.meta.text = AppEntry.categoryMeta(app.category)
         h.meta.background = null
         h.meta.setPadding(0, 0, 0, 0)
-        bindAppLine(row, h, app, 40)
+        bindAppLine(row, h, app, LIST_ICON_DP)
         return row
     }
 
@@ -680,6 +687,12 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         }
         t.text = r.text
         return t
+    }
+
+    private class Hit(val app: AppEntry, val rank: Int, val idx: Int, val len: Int)
+
+    companion object {
+        const val LIST_ICON_DP = 40
     }
 }
 
