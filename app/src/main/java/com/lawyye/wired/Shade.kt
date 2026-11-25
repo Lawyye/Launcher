@@ -207,7 +207,10 @@ object NotifHub {
     fun component(ctx: Context) = ComponentName(ctx, WiredNotificationListener::class.java)
 
     fun hasAccess(ctx: Context): Boolean = try {
-        if (Build.VERSION.SDK_INT >= 27) {
+        // connected listener = access granted: no call into the system on every shade open
+        if (WiredNotificationListener.instance != null) {
+            true
+        } else if (Build.VERSION.SDK_INT >= 27) {
             ctx.getSystemService(NotificationManager::class.java)?.isNotificationListenerAccessGranted(component(ctx)) == true
         } else {
             Settings.Secure.getString(ctx.contentResolver, "enabled_notification_listeners")?.contains(ctx.packageName + "/") == true
@@ -583,7 +586,7 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
                 val todo = ArrayList(afterOpening)
                 afterOpening.clear()
                 for (a in todo) a()
-                applyTile(flashIndex(), torchOn)
+                startSystemListening()
                 onCovering?.invoke(true)
             }.start()
         startListening()
@@ -643,8 +646,19 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
     private fun startListening() {
         NotifHub.addListener(notifListener)
         NotifHub.refresh()
+    }
+
+    private var systemListening = false
+
+    /**
+     * Torch and media-session listeners: two calls into the camera and media services, made when
+     * the slide has ended instead of before its first frame. The torch answers with its state.
+     */
+    private fun startSystemListening() {
+        if (systemListening) return
+        systemListening = true
         try {
-            cameraManager?.registerTorchCallback(torchCallback, Handler(Looper.getMainLooper()))
+            cameraManager?.registerTorchCallback(torchCallback, main)
         } catch (t: Throwable) {
             // no camera service
         }
@@ -658,15 +672,18 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
 
     private fun stopListening() {
         NotifHub.removeListener(notifListener)
-        try {
-            cameraManager?.unregisterTorchCallback(torchCallback)
-        } catch (t: Throwable) {
-            // already gone
-        }
-        try {
-            act.getSystemService(MediaSessionManager::class.java)?.removeOnActiveSessionsChangedListener(sessionsListener)
-        } catch (t: Throwable) {
-            // already gone
+        if (systemListening) {
+            systemListening = false
+            try {
+                cameraManager?.unregisterTorchCallback(torchCallback)
+            } catch (t: Throwable) {
+                // already gone
+            }
+            try {
+                act.getSystemService(MediaSessionManager::class.java)?.removeOnActiveSessionsChangedListener(sessionsListener)
+            } catch (t: Throwable) {
+                // already gone
+            }
         }
         controller?.unregisterCallback(mediaCallback)
         controller = null
