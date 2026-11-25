@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.ColorFilter
 import android.graphics.Paint
 import android.graphics.Rect
+import android.os.Build
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
@@ -99,6 +100,12 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     init {
         visibility = GONE
         isClickable = true
+        // Android 15+: while the drawer moves or scrolls, ask for the panel's top refresh rate
+        // (120 Hz on the A36); the vote counts only when it draws, so idle costs nothing
+        if (Build.VERSION.SDK_INT >= 35) {
+            setRequestedFrameRate(REQUESTED_FRAME_RATE_CATEGORY_HIGH)
+            list.setRequestedFrameRate(REQUESTED_FRAME_RATE_CATEGORY_HIGH)
+        }
         glow.gradientType = GradientDrawable.RADIAL_GRADIENT
         glow.setGradientCenter(0.5f, 0f)
         background = LayerDrawable(arrayOf(ColorDrawable(Wired.DRAWER), glow))
@@ -387,15 +394,22 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     fun open(keyboard: Boolean) {
         if (isOpen) return
         isOpen = true
-        category = AppEntry.CAT_ALL
-        chips.forEachIndexed { k, c -> context.styleChip(c, k == 0, accent) }
-        if (edit.text.isNotEmpty()) edit.setText("") else rebuild()
+        // The rows are already built (setApps, applyStyle): rebuild only if the last visit left a
+        // category or a search behind. Rebuilding on every open was the slowest frame of the drawer.
+        if (category != AppEntry.CAT_ALL) {
+            category = AppEntry.CAT_ALL
+            chips.forEachIndexed { k, c -> context.styleChip(c, k == 0, accent) }
+            if (edit.text.isEmpty()) rebuild()
+        }
+        if (edit.text.isNotEmpty()) edit.setText("")
         list.setSelection(0)
         visibility = VISIBLE
         alpha = 0f
         translationY = height * 0.06f
+        // withLayer: the drawer is drawn once into a GPU layer and only that layer fades and moves;
+        // without it every frame of the fade re-rendered the whole drawer through an offscreen buffer
         animate().alpha(1f).translationY(0f).setDuration(280L).setInterpolator(DecelerateInterpolator(2f))
-            .withEndAction(null).start()
+            .withLayer().withEndAction(null).start()
         if (keyboard) {
             edit.requestFocus()
             postDelayed({ showKeyboard() }, 160L)
@@ -409,6 +423,7 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         edit.clearFocus()
         if (animated) {
             animate().alpha(0f).translationY(height * 0.04f).setDuration(200L).setInterpolator(DecelerateInterpolator())
+                .withLayer()
                 .withEndAction {
                     visibility = GONE
                     if (edit.text.isNotEmpty()) edit.setText("")

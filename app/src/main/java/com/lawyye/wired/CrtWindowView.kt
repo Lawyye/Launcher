@@ -17,6 +17,7 @@ import android.view.View
 import android.view.animation.LinearInterpolator
 import kotlin.math.max
 import kotlin.math.roundToInt
+import java.util.concurrent.Executors
 import kotlin.random.Random
 
 /**
@@ -30,12 +31,14 @@ class CrtWindowView(ctx: Context) : View(ctx) {
     var image: Bitmap? = null
         set(v) {
             field = v
+            rebuildStill()
             invalidate()
         }
     var filter = ImageFilter.WIRED
         set(v) {
             field = v
             imagePaint.colorFilter = v.colorFilter()
+            rebuildStill()
             invalidate()
         }
     var accent = Wired.BLUE
@@ -47,6 +50,10 @@ class CrtWindowView(ctx: Context) : View(ctx) {
         }
     var caption = "crt_01 · node 07"
     var emptyText = "добавь картинки: настройки → CRT-окно"
+        set(v) {
+            field = v
+            rebuildStill()
+        }
 
     /** Rolling band and flicker (Visual profile only). */
     var continuous = false
@@ -74,6 +81,18 @@ class CrtWindowView(ctx: Context) : View(ctx) {
     private val knobStroke = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val matrix = Matrix()
+    private val stillPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val bandMatrix = Matrix()
+
+    /**
+     * The lit screen without motion — picture through its colour filter, grain, scanlines, cut to
+     * the rounded screen — rendered once in the background whenever the picture, filter or size
+     * changes. Each frame of the rolling band then draws one bitmap instead of re-filtering the
+     * picture and clipping to a path 30 times a second.
+     */
+    @Volatile
+    private var still: Bitmap? = null
+    private var stillGeneration = 0
 
     /** 0 = off, 1 = fully on. */
     private var power = 1f
@@ -141,6 +160,61 @@ class CrtWindowView(ctx: Context) : View(ctx) {
             0f, 0f, 0f, d * 70f,
             intArrayOf(0x00B7F5FF, 0x12B7F5FF, 0x00B7F5FF), null, Shader.TileMode.CLAMP,
         )
+        rebuildStill()
+    }
+
+    private fun rebuildStill() {
+        val gen = ++stillGeneration
+        // until the new still is ready, frames take the slow path with the current picture
+        still = null
+        val w = screen.width().toInt()
+        val h = screen.height().toInt()
+        if (w <= 0 || h <= 0) return
+        val bmp = image
+        val left = screen.left
+        val top = screen.top
+        val area = RectF(screen)
+        val path = Path(screenPath)
+        val text = emptyText
+        // paints are copied here, on the main thread, so the render thread never shares one
+        val tint = Paint(imagePaint)
+        tint.alpha = 255
+        val bg = Paint(screenBg)
+        val noise = Paint(noisePaint)
+        val lines = Paint(linesPaint)
+        val tp = Paint(textPaint)
+        tp.textAlign = Paint.Align.CENTER
+        tp.color = 0xB3D9E9FF.toInt()
+        val cx = area.centerX()
+        val cy = area.centerY()
+        builder.execute {
+            val out = try {
+                Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            } catch (t: Throwable) {
+                null
+            } ?: return@execute
+            val c = Canvas(out)
+            c.translate(-left, -top)
+            c.clipPath(path)
+            c.drawRect(area, bg)
+            if (bmp != null && !bmp.isRecycled) {
+                val s = max(area.width() / bmp.width, area.height() / bmp.height)
+                val m = Matrix()
+                m.postScale(s, s)
+                m.postTranslate(cx - bmp.width * s / 2f, cy - bmp.height * s / 2f)
+                c.drawBitmap(bmp, m, tint)
+            } else {
+                c.drawText(text, cx, cy, tp)
+            }
+            c.drawRect(area, noise)
+            c.drawRect(area, lines)
+            post {
+                if (gen == stillGeneration) {
+                    still = out
+                    invalidate()
+                }
+            }
+        }
     }
 
     /** The tube switching on: a bright line that opens into the picture (~700 ms). */
@@ -195,13 +269,23 @@ class CrtWindowView(ctx: Context) : View(ctx) {
         c.drawRoundRect(bezel, r, r, bezelStroke)
 
         // screen
-        c.save()
-        c.clipPath(screenPath)
-        c.drawRect(screen, screenBg)
-        if (power > 0f) drawTube(c)
-        c.drawRect(screen, vignette)
-        c.drawRect(screen, glare)
-        c.restore()
+        val sr = d * 20f
+        val ready = still
+        if (ready != null) {
+            // fast path: rounded rects instead of a path clip, one bitmap instead of four layers
+            c.drawRoundRect(screen, sr, sr, screenBg)
+            if (power > 0f) drawTubeFast(c, ready, sr)
+            c.drawRoundRect(screen, sr, sr, vignette)
+            c.drawRoundRect(screen, sr, sr, glare)
+        } else {
+            c.save()
+            c.clipPath(screenPath)
+            c.drawRect(screen, screenBg)
+            if (power > 0f) drawTube(c)
+            c.drawRect(screen, vignette)
+            c.drawRect(screen, glare)
+            c.restore()
+        }
 
         // bottom bar: caption, two knobs, power LED
         val cy = (screen.bottom + bezel.bottom) / 2f
@@ -213,6 +297,64 @@ class CrtWindowView(ctx: Context) : View(ctx) {
             val kx = ledX - d * (10f + 22f * k)
             c.drawCircle(kx, cy, d * 6f, knobPaint)
             c.drawCircle(kx, cy, d * 6f, knobStroke)
+        }
+    }
+
+    /** Tube geometry for [power]: half width, half height, white flash strength. */
+    private fun tube(): FloatArray {
+        val p = power
+        var white: Float
+        val hw: Float
+        val hh: Float
+        when {
+            p < 0.2f -> {
+                hw = screen.width() / 2f * (p / 0.2f)
+                hh = max(d, screen.height() * 0.006f)
+                white = 1f
+            }
+            p < 0.55f -> {
+                val t = (p - 0.2f) / 0.35f
+                hw = screen.width() / 2f
+                hh = screen.height() / 2f * (0.012f + 0.988f * t)
+                white = 0.85f - 0.7f * t
+            }
+            else -> {
+                hw = screen.width() / 2f
+                hh = screen.height() / 2f
+                white = 0.15f * (1f - (p - 0.55f) / 0.45f)
+            }
+        }
+        if (p >= 1f) white = 0f
+        return floatArrayOf(hw, hh, white)
+    }
+
+    private fun drawTubeFast(c: Canvas, still: Bitmap, sr: Float) {
+        val opening = power < 1f
+        if (opening) {
+            val t = tube()
+            c.save()
+            c.clipRect(screen.centerX() - t[0], screen.centerY() - t[1], screen.centerX() + t[0], screen.centerY() + t[1])
+        }
+        stillPaint.alpha = (255 * flickerAlpha).toInt()
+        c.drawBitmap(still, screen.left, screen.top, stillPaint)
+        if (continuous && looping) {
+            val period = 9000f
+            val k = ((SystemClock.uptimeMillis() - bandStart) % period.toLong()) / period
+            val y = screen.top - d * 70f + k * (screen.height() + d * 140f)
+            // the gradient is transparent beyond its 70 dp, so one rounded rect shows just the band
+            bandMatrix.setTranslate(0f, y)
+            band.shader?.let {
+                it.setLocalMatrix(bandMatrix)
+                c.drawRoundRect(screen, sr, sr, band)
+            }
+        }
+        if (opening) {
+            val white = tube()[2]
+            if (white > 0f) {
+                flash.alpha = (white * 255).toInt().coerceIn(0, 255)
+                c.drawRoundRect(screen, sr, sr, flash)
+            }
+            c.restore()
         }
     }
 
@@ -276,5 +418,10 @@ class CrtWindowView(ctx: Context) : View(ctx) {
             c.drawRect(screen, flash)
         }
         c.restore()
+    }
+
+    private companion object {
+        /** One background thread renders still screens; they are rare (a new picture, a resize). */
+        val builder = Executors.newSingleThreadExecutor()
     }
 }

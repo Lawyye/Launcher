@@ -34,16 +34,45 @@ object Diag {
     private class Bucket {
         var frames = 0L
         var late = 0L
-        var deadlineSum = 0L
+        var severe = 0L
         var worstNs = 0L
+        val worstParts = LongArray(PARTS.size)
+
+        // the display's own refresh rate at each frame
+        var hzSamples = 0L
+        var hzHigh = 0L
+
+        // the step between consecutive frames while something moves: 120 / 90 / 60 / 30 fps, stall
+        val steps = LongArray(5)
 
         fun clear() {
             frames = 0L
             late = 0L
-            deadlineSum = 0L
+            severe = 0L
             worstNs = 0L
+            worstParts.fill(0L)
+            hzSamples = 0L
+            hzHigh = 0L
+            steps.fill(0L)
         }
     }
+
+    /** What a frame's time went to; the worst frame of each screen is reported this way. */
+    private val PARTS = arrayOf(
+        FrameMetrics.UNKNOWN_DELAY_DURATION to "ожидание главного потока",
+        FrameMetrics.INPUT_HANDLING_DURATION to "касания",
+        FrameMetrics.ANIMATION_DURATION to "анимации",
+        FrameMetrics.LAYOUT_MEASURE_DURATION to "раскладка",
+        FrameMetrics.DRAW_DURATION to "запись отрисовки",
+        FrameMetrics.SYNC_DURATION to "загрузка картинок в GPU",
+        FrameMetrics.COMMAND_ISSUE_DURATION to "команды GPU",
+        FrameMetrics.SWAP_BUFFERS_DURATION to "вывод кадра",
+    )
+
+    /** The display refresh rate, sampled on the main thread at every frame. */
+    @Volatile
+    private var displayHz = 60f
+    private var lastVsync = 0L
 
     private val buckets = Array(3) { Bucket() }
 
@@ -88,6 +117,12 @@ object Diag {
         act.window.addOnFrameMetricsAvailableListener(l, Handler(t.looper))
         val tracker = ViewTreeObserver.OnPreDrawListener {
             scene = current()
+            displayHz = if (Build.VERSION.SDK_INT >= 30) {
+                act.display?.refreshRate ?: displayHz
+            } else {
+                @Suppress("DEPRECATION")
+                act.windowManager.defaultDisplay?.refreshRate ?: displayHz
+            }
             true
         }
         sceneTracker = tracker
@@ -114,12 +149,32 @@ object Diag {
         val total = m.getMetric(FrameMetrics.TOTAL_DURATION)
         val deadline = if (Build.VERSION.SDK_INT >= 31) m.getMetric(FrameMetrics.DEADLINE) else fallbackNs
         if (total <= 0L || deadline <= 0L) return
+        val vsync = m.getMetric(FrameMetrics.VSYNC_TIMESTAMP)
         val b = buckets[scene.coerceIn(0, 2)]
         synchronized(this) {
             b.frames++
-            b.deadlineSum += deadline
             if (total > deadline) b.late++
-            if (total > b.worstNs) b.worstNs = total
+            if (total > deadline * 2) b.severe++
+            if (total > b.worstNs) {
+                b.worstNs = total
+                for (i in PARTS.indices) b.worstParts[i] = m.getMetric(PARTS[i].first).coerceAtLeast(0L)
+            }
+            b.hzSamples++
+            if (displayHz >= 100f) b.hzHigh++
+            val step = vsync - lastVsync
+            lastVsync = vsync
+            // only steps between frames of one continuous motion; a pause longer than 250 ms is idle
+            if (step in 1L..250_000_000L) {
+                val ms = step / 1e6
+                val k = when {
+                    ms <= 9.5 -> 0
+                    ms <= 12.5 -> 1
+                    ms <= 17.5 -> 2
+                    ms <= 40.0 -> 3
+                    else -> 4
+                }
+                b.steps[k]++
+            }
         }
     }
 
@@ -130,8 +185,18 @@ object Diag {
         if (processStarted) return
         processStarted = true
         val started = Process.getStartUptimeMillis()
-        firstFrame(act) { coldStartMs = it - started }
+        val created = SystemClock.uptimeMillis()
+        // the process may have been started earlier by the shade or notification service:
+        // the wait before the home screen was asked for is not the launcher's start time
+        processWaitMs = created - started
+        firstFrame(act) {
+            coldStartMs = it - started
+            buildMs = it - created
+        }
     }
+
+    private var processWaitMs = -1L
+    private var buildMs = -1L
 
     fun onHomeRestart() {
         restartAt = SystemClock.uptimeMillis()
@@ -170,6 +235,7 @@ object Diag {
 
     fun clear() = synchronized(this) {
         buckets.forEach { it.clear() }
+        lastVsync = 0L
         returns.clear()
         homeIntents = 0
         contractIntents = 0
@@ -189,15 +255,36 @@ object Diag {
         for (i in buckets.indices) {
             val b = buckets[i]
             if (b.frames == 0L) continue
-            val hz = 1_000_000_000.0 * b.frames / b.deadlineSum
-            sb.append(NAMES[i]).append(": ").append(b.frames).append(" кадров · ")
-                .append(String.format(Locale.US, "%.0f Гц", hz)).append(" · дольше бюджета ")
-                .append(String.format(Locale.US, "%.1f%%", 100.0 * b.late / b.frames)).append(" · худший ")
-                .append(String.format(Locale.US, "%.1f мс", b.worstNs / 1e6)).append("\n")
+            fun pct(n: Long, of: Long) = if (of == 0L) "0%" else String.format(Locale.US, "%.0f%%", 100.0 * n / of)
+            sb.append(NAMES[i]).append(": ").append(b.frames).append(" кадров\n")
+            sb.append("  экран на 120 Гц: ").append(pct(b.hzHigh, b.hzSamples)).append(" кадров\n")
+            val moving = b.steps.sum()
+            if (moving > 0) {
+                sb.append("  шаг между кадрами в движении: 120 fps ").append(pct(b.steps[0], moving))
+                    .append(" · 90 ").append(pct(b.steps[1], moving))
+                    .append(" · 60 ").append(pct(b.steps[2], moving))
+                    .append(" · 30 ").append(pct(b.steps[3], moving))
+                    .append(" · пропуски ").append(pct(b.steps[4], moving)).append("\n")
+            }
+            sb.append("  не успели к сроку: ").append(String.format(Locale.US, "%.1f%%", 100.0 * b.late / b.frames))
+                .append(" · вдвое дольше срока: ").append(String.format(Locale.US, "%.1f%%", 100.0 * b.severe / b.frames)).append("\n")
+            sb.append("  худший кадр ").append(String.format(Locale.US, "%.0f мс", b.worstNs / 1e6))
+            val parts = PARTS.indices.filter { b.worstParts[it] >= 1_000_000L }.sortedByDescending { b.worstParts[it] }
+            if (parts.isNotEmpty()) {
+                sb.append(": ").append(
+                    parts.joinToString(", ") { PARTS[it].second + " " + String.format(Locale.US, "%.0f", b.worstParts[it] / 1e6) },
+                )
+            }
+            sb.append("\n")
         }
 
         sb.append("\n== запуск ==\n")
-        sb.append("холодный запуск: ").append(if (coldStartMs >= 0) "$coldStartMs мс" else "не было с момента запуска процесса").append("\n")
+        if (coldStartMs >= 0) {
+            sb.append("холодный запуск: ").append(coldStartMs).append(" мс (процесс до запроса экрана ")
+                .append(processWaitMs).append(" мс, сборка экрана ").append(buildMs).append(" мс)\n")
+        } else {
+            sb.append("холодный запуск: не было с момента запуска процесса\n")
+        }
         if (returns.isNotEmpty()) {
             val sorted = returns.sorted()
             sb.append("возврат домой (до первого кадра): медиана ").append(sorted[sorted.size / 2])

@@ -344,6 +344,11 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
     private val notifListener: () -> Unit = { bindNotifications() }
 
     init {
+        // Android 15+: the panel asks for the top refresh rate while it animates or scrolls
+        if (Build.VERSION.SDK_INT >= 35) setRequestedFrameRate(REQUESTED_FRAME_RATE_CATEGORY_HIGH)
+    }
+
+    init {
         visibility = GONE
         isClickable = true
         glow.gradientType = GradientDrawable.RADIAL_GRADIENT
@@ -490,7 +495,8 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         refresh()
         alpha = 0f
         translationY = -height * 0.12f
-        animate().alpha(1f).translationY(0f).setDuration(260L).setInterpolator(DecelerateInterpolator(2f)).start()
+        // drawn once into a GPU layer that fades and moves, instead of re-rendering every frame
+        animate().alpha(1f).translationY(0f).setDuration(260L).setInterpolator(DecelerateInterpolator(2f)).withLayer().start()
         startListening()
     }
 
@@ -500,6 +506,7 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         stopListening()
         if (animated) {
             animate().alpha(0f).translationY(-height * 0.08f).setDuration(200L).setInterpolator(DecelerateInterpolator())
+                .withLayer()
                 .withEndAction {
                     visibility = GONE
                     onClosed?.invoke()

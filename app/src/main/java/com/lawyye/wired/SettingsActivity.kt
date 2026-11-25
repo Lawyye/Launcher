@@ -107,7 +107,7 @@ class SettingsActivity : Activity() {
         val topOn = WiredShadeService.isEnabled(this)
         sh.add(settingsRow(R.drawable.ic_arrow_down, "Шторка WIRED сверху в любом приложении", accent,
             value = if (topOn) "включена" else "выключена") { topShadeHelp(topOn) })
-        sh.add(segRow(R.drawable.ic_resize, "Где ловить свайп сверху", listOf("весь верх", "левая половина", "правая половина"), prefs.topZone) {
+        sh.add(segRow(R.drawable.ic_resize, "Где ловить свайп сверху", listOf("весь край", "слева", "справа"), prefs.topZone) {
             prefs.topZone = it
             WiredShadeService.refresh()
         })

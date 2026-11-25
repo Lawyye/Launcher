@@ -55,7 +55,7 @@ class NightScene {
             intArrayOf(0x574C7FC0, 0x004C7FC0), null, Shader.TileMode.CLAMP,
         )
         moonGlow.shader = RadialGradient(
-            300f, 226f, 64f, intArrayOf(0x6BCFE3FF, 0x00CFE3FF), null, Shader.TileMode.CLAMP,
+            MOON_X, MOON_Y, 64f, intArrayOf(0x6BCFE3FF, 0x00CFE3FF), null, Shader.TileMode.CLAMP,
         )
         wire.style = Paint.Style.STROKE
         wire.strokeCap = Paint.Cap.ROUND
@@ -111,9 +111,9 @@ class NightScene {
             c.drawCircle(stars[i], stars[i + 1], stars[i + 2], solid)
             i += 4
         }
-        c.drawCircle(300f, 226f, 64f, moonGlow)
+        c.drawCircle(MOON_X, MOON_Y, 64f, moonGlow)
         solid.color = 0xEBE4EEFF.toInt()
-        c.drawCircle(300f, 226f, 8.5f, solid)
+        c.drawCircle(MOON_X, MOON_Y, 8.5f, solid)
         c.drawPath(wires, wire)
         solid.color = 0xFF010309.toInt()
         for (r in poles) c.drawRect(r, solid)
@@ -127,6 +127,12 @@ class NightScene {
             i += 3
         }
         c.restore()
+    }
+
+    private companion object {
+        // up between the wordmark and the clock: at (300, 226) the moon sat right behind the seconds
+        const val MOON_X = 322f
+        const val MOON_Y = 108f
     }
 }
 
