@@ -54,6 +54,9 @@ class WiredShadeService : AccessibilityService(), QuickPanelView.Host {
     private var openedAt = 0L
     private var keyboards: Set<String> = emptySet()
 
+    /** Taken from the configuration the system hands over, never from resources that may lag it. */
+    private var landscape = false
+
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
@@ -73,6 +76,7 @@ class WiredShadeService : AccessibilityService(), QuickPanelView.Host {
         instance = this
         Fonts.init(this)
         prefs = Prefs(this)
+        landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         wm = getSystemService(WindowManager::class.java) ?: return
         keyboards = try {
             getSystemService(InputMethodManager::class.java)?.inputMethodList?.map { it.packageName }?.toSet() ?: emptySet()
@@ -108,6 +112,7 @@ class WiredShadeService : AccessibilityService(), QuickPanelView.Host {
         super.onConfigurationChanged(newConfig)
         // an open shade finishes as it is; the next swipe builds a window with the new sizes
         cachedWindow = null
+        landscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
         // rotation changes the width of the catch zone, and in landscape there is none
         hideStrip()
         if (getSystemService(PowerManager::class.java)?.isInteractive != false) updateStrip()
@@ -145,7 +150,7 @@ class WiredShadeService : AccessibilityService(), QuickPanelView.Host {
         if (!::wm.isInitialized || locked()) return
         // turned sideways it is almost always a game or a video: their top edge, with its buttons,
         // stays theirs and the system's
-        if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+        if (landscape) {
             hideStrip()
             return
         }
