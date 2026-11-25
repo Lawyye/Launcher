@@ -801,7 +801,8 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
             .header(null, "Шторка WIRED", "новое")
             .message(
                 "Свайп вниз из середины экрана или тап по «WIRED» вверху.\n\n" +
-                    "Свайп от самого верхнего края — это шторка Samsung: этот жест система забирает себе раньше любого приложения."
+                    "Чтобы шторка WIRED открывалась и от самого верхнего края, в любом приложении: " +
+                    "Настройки WIRED → шторка → «Шторка WIRED сверху в любом приложении»."
             )
             .option(R.drawable.ic_arrow_down, "Открыть шторку") { openShade() }
             .option(R.drawable.ic_check, "Понятно") {}

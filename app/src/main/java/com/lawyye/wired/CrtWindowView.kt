@@ -178,6 +178,8 @@ class CrtWindowView(ctx: Context) : View(ctx) {
         val gen = ++stillGeneration
         // until the new still is ready, frames take the slow path with the current picture
         still = null
+        // a CRT that is not on screen (another home mode) builds nothing: it rebuilds on attach
+        if (!isAttachedToWindow) return
         val w = screen.width().toInt()
         val h = screen.height().toInt()
         if (w <= 0 || h <= 0) return
@@ -263,12 +265,16 @@ class CrtWindowView(ctx: Context) : View(ctx) {
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        if (still == null) rebuildStill()
         updateLoop()
     }
 
     override fun onDetachedFromWindow() {
         removeCallbacks(loop)
         powerAnim?.cancel()
+        // 2–3 MB that nobody draws while another home mode is on
+        stillGeneration++
+        still = null
         super.onDetachedFromWindow()
     }
 

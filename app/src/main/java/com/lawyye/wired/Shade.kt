@@ -504,7 +504,9 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         visibility = VISIBLE
         refresh()
         alpha = 0f
-        translationY = -height * 0.12f
+        // on the very first open the panel has not been measured yet: slide by the parent's height
+        val h = if (height > 0) height else (parent as? View)?.height ?: 0
+        translationY = -h * 0.12f
         // drawn once into a GPU layer that fades and moves, instead of re-rendering every frame
         opening = true
         animate().alpha(1f).translationY(0f).setDuration(260L).setInterpolator(DecelerateInterpolator(2f)).withLayer()

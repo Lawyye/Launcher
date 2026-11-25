@@ -183,6 +183,11 @@ class HomeBackdropView(ctx: Context) : View(ctx) {
         }
 
     var accent = Wired.BLUE
+        set(v) {
+            field = v
+            rebuildScrims()
+            invalidate()
+        }
     var placeholder = "выбери фото в «Композиции»"
 
     private val nightScene = NightScene()

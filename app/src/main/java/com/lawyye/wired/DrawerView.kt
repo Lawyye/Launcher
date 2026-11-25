@@ -523,7 +523,9 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         return row
     }
 
-    private inner class GridHolder(val cols: Int, val icon: Int, val cells: List<LinearLayout>, val icons: List<ImageView>, val labels: List<TextView>)
+    private inner class GridHolder(val cols: Int, val icon: Int, val cells: List<LinearLayout>, val icons: List<ImageView>, val labels: List<TextView>) {
+        var accent = 0
+    }
 
     private fun grid(cv: View?, r: Row.Grid): View {
         val px = context.dpi(iconDp)
@@ -559,7 +561,12 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                 labels.add(t)
             }
             h = GridHolder(columns, px, cells, icons, labels)
+            h.accent = accent
             row.tag = h
+        }
+        if (h.accent != accent) {
+            for (cell in h.cells) cell.background = context.ripple(null, 18f, accent)
+            h.accent = accent
         }
         for (i in 0 until h.cols) {
             val cell = h.cells[i]
@@ -586,7 +593,10 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         return row
     }
 
-    private class RowHolder(val icon: ImageView, val name: TextView, val meta: TextView)
+    private class RowHolder(val icon: ImageView, val name: TextView, val meta: TextView) {
+        /** What the current background was made for (accent and highlight): rebuilt only on change. */
+        var bgKey = 0L
+    }
 
     private fun appLine(cv: View?, iconDp: Int, heightDp: Int): Pair<LinearLayout, RowHolder> {
         val existing = cv as? LinearLayout
@@ -632,7 +642,12 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         val (row, h) = appLine(if (cv?.getTag(R.drawable.ic_list) == true) cv else null, LIST_ICON_DP, 56)
         row.setTag(R.drawable.ic_list, true)
         row.setPadding(0, 0, if (rail.visibility == VISIBLE) context.dpi(26) else 0, 0)
-        row.background = context.ripple(null, 14f, accent)
+        // a new ripple per bind meant garbage on every scrolled row in list mode
+        val key = accent.toLong()
+        if (h.bgKey != key) {
+            row.background = context.ripple(null, 14f, accent)
+            h.bgKey = key
+        }
         h.name.text = app.label
         h.meta.text = AppEntry.categoryMeta(app.category)
         h.meta.background = null
@@ -645,7 +660,11 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         val (row, h) = appLine(if (cv?.getTag(R.drawable.ic_search) == true) cv else null, 44, 60)
         row.setTag(R.drawable.ic_search, true)
         row.setPadding(context.dpi(10), 0, context.dpi(10), 0)
-        row.background = context.ripple(if (r.first) context.rounded(Wired.alpha(accent, 0x14), 16f) else null, 16f, accent)
+        val key = (accent.toLong() shl 1) or if (r.first) 1L else 0L
+        if (h.bgKey != key) {
+            row.background = context.ripple(if (r.first) context.rounded(Wired.alpha(accent, 0x14), 16f) else null, 16f, accent)
+            h.bgKey = key
+        }
         val sb = SpannableStringBuilder(r.app.label)
         if (r.len > 0 && r.start + r.len <= sb.length) {
             sb.setSpan(ForegroundColorSpan(accent), r.start, r.start + r.len, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)

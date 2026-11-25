@@ -41,7 +41,15 @@ class WiredShadeService : AccessibilityService(), QuickPanelView.Host {
     private lateinit var prefs: Prefs
     private var strip: View? = null
     private var stripShown = false
+    /** The shade window while it is on screen. */
     private var shadeWindow: ShadeWindow? = null
+
+    /**
+     * The same window kept between swipes: building the panel (about a hundred views, plus a query
+     * to the camera service for the flashlight) on every swipe made the top shade slow to appear.
+     * Dropped on a configuration change (rotation, font size, theme), when its sizes go stale.
+     */
+    private var cachedWindow: ShadeWindow? = null
     private var openedAt = 0L
     private var keyboards: Set<String> = emptySet()
 
@@ -97,6 +105,7 @@ class WiredShadeService : AccessibilityService(), QuickPanelView.Host {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        if (shadeWindow == null) cachedWindow = null
         // rotation changes the width of the catch zone
         if (stripShown) {
             hideStrip()
@@ -228,7 +237,7 @@ class WiredShadeService : AccessibilityService(), QuickPanelView.Host {
     private fun openShade() {
         if (locked() || shadeWindow != null) return
         // the app's own theme, so switches, sliders and scroll edges look as they do in WIRED
-        val win = ShadeWindow(android.view.ContextThemeWrapper(this, R.style.Theme_Wired))
+        val win = cachedWindow ?: ShadeWindow(android.view.ContextThemeWrapper(this, R.style.Theme_Wired)).also { cachedWindow = it }
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
