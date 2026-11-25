@@ -17,9 +17,10 @@ import java.util.Locale
  * guesses. Settings → система → Диагностика.
  *
  * - Frames (only while "Замер плавности" is on): every frame the home window draws, sorted by
- *   what was on screen (home, drawer, shade). For each: the refresh rate the system actually ran
- *   (from each frame's deadline: 8.3 ms = 120 Hz, 16.7 ms = 60 Hz), the share of frames that took
- *   longer than their deadline, and the worst frame.
+ *   what was on screen (home, drawer, shade). For each: how often the display ran at 120 Hz
+ *   (sampled from the display itself), the step between consecutive frames while something moves
+ *   (120 / 90 / 60 / 30 fps or a skip), the share of frames that missed their deadline, and the
+ *   worst frame with what its time went to.
  * - Starts (always, it costs one timestamp): cold start of the process to the first frame, and
  *   the return home from an app to the first frame.
  * - The home-gesture contract: whether One UI tells WIRED where to animate a closing app

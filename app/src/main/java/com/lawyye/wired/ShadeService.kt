@@ -105,7 +105,8 @@ class WiredShadeService : AccessibilityService(), QuickPanelView.Host {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (shadeWindow == null) cachedWindow = null
+        // an open shade finishes as it is; the next swipe builds a window with the new sizes
+        cachedWindow = null
         // rotation changes the width of the catch zone
         if (stripShown) {
             hideStrip()
@@ -257,7 +258,8 @@ class WiredShadeService : AccessibilityService(), QuickPanelView.Host {
         openedAt = SystemClock.uptimeMillis()
         listenForWindows(true)
         win.panel.applyStyle(prefs.accent)
-        win.post { win.panel.open() }
+        // removed again before this ran (screen off right after the swipe): don't open a hidden panel
+        win.post { if (shadeWindow === win) win.panel.open() }
     }
 
     private fun closeShade(animated: Boolean) {

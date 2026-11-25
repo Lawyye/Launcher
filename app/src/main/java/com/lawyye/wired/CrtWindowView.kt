@@ -347,8 +347,8 @@ class CrtWindowView(ctx: Context) : View(ctx) {
 
     private fun drawTubeFast(c: Canvas, still: Bitmap, sr: Float) {
         val opening = power < 1f
-        if (opening) {
-            val t = tube()
+        val t = if (opening) tube() else null
+        if (t != null) {
             c.save()
             c.clipRect(screen.centerX() - t[0], screen.centerY() - t[1], screen.centerX() + t[0], screen.centerY() + t[1])
         }
@@ -365,8 +365,8 @@ class CrtWindowView(ctx: Context) : View(ctx) {
                 c.drawRoundRect(screen, sr, sr, band)
             }
         }
-        if (opening) {
-            val white = tube()[2]
+        if (t != null) {
+            val white = t[2]
             if (white > 0f) {
                 flash.alpha = (white * 255).toInt().coerceIn(0, 255)
                 c.drawRoundRect(screen, sr, sr, flash)
@@ -425,10 +425,12 @@ class CrtWindowView(ctx: Context) : View(ctx) {
             val period = 9000f
             val t = ((SystemClock.uptimeMillis() - bandStart) % period.toLong()) / period
             val y = screen.top - d * 70f + t * (screen.height() + d * 140f)
-            c.save()
-            c.translate(0f, y)
-            c.drawRect(screen.left, 0f, screen.right, d * 70f, band)
-            c.restore()
+            // the shader keeps the local matrix the fast path set: move the band the same way here
+            bandMatrix.setTranslate(0f, y)
+            band.shader?.let {
+                it.setLocalMatrix(bandMatrix)
+                c.drawRect(screen, band)
+            }
         }
         if (white > 0f) {
             flash.alpha = (white * 255).toInt().coerceIn(0, 255)
