@@ -101,9 +101,20 @@ class CrtWindowView(ctx: Context) : View(ctx) {
     private var bandStart = SystemClock.uptimeMillis()
     private var flickerAlpha = 1f
 
+    /**
+     * True while something opaque covers the window (the drawer, the shade, a dialog). The loop
+     * then draws nothing and only checks back 4 times a second: measured on the A36, the band
+     * kept rendering at 30 fps behind the open drawer — a quarter of all drawer frames.
+     */
+    var covered: (() -> Boolean)? = null
+
     private val loop = object : Runnable {
         override fun run() {
             if (!looping) return
+            if (covered?.invoke() == true) {
+                postDelayed(this, 250L)
+                return
+            }
             flickerAlpha = if (Random.nextFloat() < 0.04f) 0.84f else 1f
             invalidate()
             postDelayed(this, 33L)

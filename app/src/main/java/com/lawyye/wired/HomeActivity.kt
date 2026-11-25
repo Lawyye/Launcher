@@ -189,6 +189,8 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
         drawer = DrawerView(this, this)
         dock = DockView(this, this)
         crt = CrtWindowView(this)
+        // the drawer is opaque and the shade nearly so: nothing of the CRT shows behind them
+        crt.covered = { drawer.isOpen || shade.isOpen || !hasWindowFocus() }
         shade = QuickPanelView(this, this)
         crt.setOnClickListener { nextCrtImage() }
         crt.setOnLongClickListener {
