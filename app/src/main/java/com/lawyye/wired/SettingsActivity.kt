@@ -221,6 +221,8 @@ class SettingsActivity : Activity() {
             value = if (crashAt == null) "чисто" else android.text.format.DateFormat.format("d MMM, HH:mm", crashAt).toString()) {
             showCrashLog()
         })
+        sys.add(settingsRow(R.drawable.ic_gauge, "Диагностика", accent,
+            value = if (Diag.isOn(this)) "замер идёт" else "замер выключен") { showDiag() })
         col.addView(sys)
         val lic = meta("шрифты: Space Grotesk, Manrope, IBM Plex Mono — SIL Open Font License 1.1")
         lic.setPadding(dpi(4), dpi(14), 0, 0)
@@ -263,6 +265,32 @@ class SettingsActivity : Activity() {
         i.putExtra(":settings:fragment_args_key", key)
         i.putExtra(":settings:show_fragment_args", args)
         AppActions.safeStart(this, i)
+    }
+
+    /** Real numbers from this phone: frame rate and dropped frames, start times, the home gesture. */
+    private fun showDiag() {
+        val on = Diag.isOn(this)
+        val text = Diag.report(this)
+        val hint = if (on) {
+            "\n\nЗамер работает, пока включён. Покрути меню, открой шторку, позапускай приложения — потом открой этот отчёт."
+        } else {
+            "\n\nВключи замер плавности, поработай с WIRED несколько минут и вернись сюда."
+        }
+        WiredDialog(this, accent).header(null, "Диагностика", "только на этом телефоне")
+            .message(text + hint)
+            .option(R.drawable.ic_gauge, if (on) "Выключить замер плавности" else "Включить замер плавности") {
+                Diag.setOn(this, !on)
+                val y = scroll.scrollY
+                build()
+                scroll.post { scroll.scrollTo(0, y) }
+            }
+            .option(R.drawable.ic_check, "Скопировать отчёт") {
+                val cm = getSystemService(android.content.ClipboardManager::class.java)
+                cm?.setPrimaryClip(android.content.ClipData.newPlainText("WIRED diagnostics", text))
+                toast("Скопировано")
+            }
+            .option(R.drawable.ic_trash, "Сбросить замеры", danger = true) { Diag.clear() }
+            .show()
     }
 
     /** The crash log, to copy and send when something breaks — the text names the exact line. */

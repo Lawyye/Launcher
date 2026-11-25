@@ -99,6 +99,17 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
         AppRepository.init(this)
         if (AppRepository.loaded) onAppsChanged()
         root.post { maybeWelcome() }
+        Diag.onHomeCreated(this)
+    }
+
+    override fun onRestart() {
+        super.onRestart()
+        Diag.onHomeRestart()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        Diag.onHomeStart(this)
     }
 
     override fun onResume() {
@@ -115,10 +126,18 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
             screenWasOff = false
             onUnlock()
         }
+        Diag.attach(this) {
+            when {
+                shade.isOpen -> Diag.SHADE
+                drawer.isOpen -> Diag.DRAWER
+                else -> Diag.HOME
+            }
+        }
     }
 
     override fun onPause() {
         super.onPause()
+        Diag.detach(this)
         active = false
         unregisterLive()
         crt.onVisible(false)
@@ -148,6 +167,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        Diag.onHomeIntent(intent.extras)
         if (drawer.isOpen) drawer.close(true)
         if (shade.isOpen) shade.close(true)
     }
