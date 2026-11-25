@@ -628,14 +628,20 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
         val mm = String.format(Locale.US, "%02d", cal.get(Calendar.MINUTE))
         val ss = if (prefs.seconds) String.format(Locale.US, ":%02d", cal.get(Calendar.SECOND)) else ""
         c.setTime(hh, mm, ss)
-        dateLine?.text = dateFmt.format(Date()).lowercase()
+        // with seconds on this runs every second: setting the same date text again made the
+        // whole home screen lay itself out once a second
+        val d = dateFmt.format(Date()).lowercase()
+        dateLine?.let { if (it.text.toString() != d) it.text = d }
         if (::shade.isInitialized && shade.isOpen) shade.updateTime()
     }
 
     private fun updateInfo() {
         val t = infoLine ?: return
         val bat = if (batteryPct < 0) "" else " · " + batteryPct + "%" + if (charging) " +" else ""
-        t.text = netLabel + bat
+        // the battery broadcast comes every few seconds while charging (voltage, temperature):
+        // only a changed text is worth a layout pass
+        val v = netLabel + bat
+        if (t.text.toString() != v) t.text = v
     }
 
     // ------------------------------------------------------------------ gestures

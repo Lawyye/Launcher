@@ -334,10 +334,10 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
     private var torchOn = false
     private val torchCallback = object : CameraManager.TorchCallback() {
         override fun onTorchModeChanged(cameraId: String, enabled: Boolean) {
-            if (cameraId == torchId) {
-                torchOn = enabled
-                refreshToggles()
-            }
+            if (cameraId != torchId || enabled == torchOn) return
+            torchOn = enabled
+            // only the flashlight tile; while the panel slides in, it is drawn when the slide ends
+            if (!opening) applyTile(flashIndex(), enabled)
         }
     }
 
@@ -345,16 +345,61 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
     private val mediaCallback = object : MediaController.Callback() {
         override fun onMetadataChanged(metadata: MediaMetadata?) = bindMedia()
         override fun onPlaybackStateChanged(state: PlaybackState?) = bindMedia()
-        override fun onSessionDestroyed() = findController()
+        override fun onSessionDestroyed() = readMedia()
     }
-    private val sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener { findController() }
+    private val sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener { readMedia() }
     // While the panel slides in, a fresh notification list only marks the rows stale; they are
     // rebuilt when the animation ends. Rebuilding 40 rows mid-animation was a dropped frame.
     private var opening = false
     private var pendingBind = false
     private var boundSig = 0
+    private var bound = false
     private val notifListener: () -> Unit = {
         if (opening) pendingBind = true else bindNotifications()
+    }
+
+    /** Results that arrived while the panel was sliding in; applied when the slide ends. */
+    private val afterOpening = ArrayList<() -> Unit>()
+
+    /** What each tile is drawn as, and in which accent: a tile is restyled only when one changes. */
+    private var tileOn = BooleanArray(0)
+    private var tileAccent = 0
+    private var styled = false
+    private var stateGen = 0
+    private var mediaGen = 0
+    private var mediaLabel: String? = null
+    private var playAccent = 0
+    private var lastTime = ""
+    private var lastDate = ""
+
+    /** Notification rows by key, kept between opens and updated in place. */
+    private val rows = HashMap<String, NotifRow>()
+    private var emptyRow: TextView? = null
+
+    private class NotifRow(
+        val view: LinearLayout,
+        val tile: FrameLayout,
+        val icon: ImageView,
+        val meta: TextView,
+        val title: TextView,
+        val text: TextView,
+        val clearable: Boolean,
+    ) {
+        var item: NotifItem? = null
+        var accent = 0
+        var iconSrc: Drawable? = null
+        var metaText: String? = null
+        var titleText: String? = null
+        var bodyText: String? = null
+    }
+
+    /** The system state the panel shows: about ten calls into Android, made off the main thread. */
+    private class States(val tiles: BooleanArray, val brightness: Int, val auto: Boolean, val volume: Int, val volumeMax: Int)
+
+    private companion object {
+        /** One thread for both panels (home and overlay): the reads are short and rare. */
+        val reader = Executors.newSingleThreadExecutor()
+        val main = Handler(Looper.getMainLooper())
     }
 
     init {
@@ -363,7 +408,9 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
     }
 
     init {
-        visibility = GONE
+        // closed = invisible, not gone: the panel stays measured and laid out, so the first frame
+        // of the slide does not have to lay out a hundred views first
+        visibility = INVISIBLE
         isClickable = true
         glow.gradientType = GradientDrawable.RADIAL_GRADIENT
         glow.setGradientCenter(0.5f, 0f)
@@ -395,6 +442,7 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         tglp.topMargin = act.dpi(18)
         col.addView(toggleGrid, tglp)
         buildToggles()
+        restyleTiles()
 
         // sliders
         val sliders = LinearLayout(act)
@@ -486,14 +534,18 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
     }
 
     fun applyStyle(accent: Int) {
+        // the overlay shade calls this on every swipe: nothing to do when the accent is the same
+        if (styled && accent == this.accent) return
+        styled = true
         this.accent = accent
         glow.colors = intArrayOf(Wired.alpha(accent, 0x29), Wired.alpha(accent, 0))
         for (sb in listOf(brightness, volume)) {
             sb.progressTintList = android.content.res.ColorStateList.valueOf(accent)
             sb.thumbTintList = android.content.res.ColorStateList.valueOf(accent)
         }
-        refreshToggles()
-        refreshAuto()
+        restyleTiles()
+        act.styleChip(autoChip, autoOn, accent)
+        if (isOpen) bindNotifications()
     }
 
     fun setInsets(top: Int, bottom: Int, left: Int, right: Int) {
@@ -510,6 +562,9 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
     fun open() {
         if (isOpen) return
         isOpen = true
+        // from here until the slide ends, whatever arrives (system state, the player, new
+        // notifications) waits: changing the content mid-slide re-renders the whole layer
+        opening = true
         visibility = VISIBLE
         refresh()
         alpha = 0f
@@ -517,15 +572,19 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         val h = if (height > 0) height else (parent as? View)?.height ?: 0
         translationY = -h * 0.12f
         // drawn once into a GPU layer that fades and moves, instead of re-rendering every frame
-        opening = true
         animate().alpha(1f).translationY(0f).setDuration(260L).setInterpolator(DecelerateInterpolator(2f)).withLayer()
             .withEndAction {
                 opening = false
+                if (!isOpen) return@withEndAction
                 if (pendingBind) {
                     pendingBind = false
                     bindNotifications()
                 }
-                if (isOpen) onCovering?.invoke(true)
+                val todo = ArrayList(afterOpening)
+                afterOpening.clear()
+                for (a in todo) a()
+                applyTile(flashIndex(), torchOn)
+                onCovering?.invoke(true)
             }.start()
         startListening()
     }
@@ -535,35 +594,50 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         isOpen = false
         opening = false
         pendingBind = false
+        afterOpening.clear()
+        // reads still running are dropped when they come back
+        stateGen++
+        mediaGen++
         onCovering?.invoke(false)
         stopListening()
         if (animated) {
             animate().alpha(0f).translationY(-height * 0.08f).setDuration(200L).setInterpolator(DecelerateInterpolator())
                 .withLayer()
                 .withEndAction {
-                    visibility = GONE
+                    visibility = INVISIBLE
                     onClosed?.invoke()
                 }.start()
         } else {
             animate().cancel()
-            visibility = GONE
+            visibility = INVISIBLE
             onClosed?.invoke()
         }
     }
 
-    /** Re-read every state (after returning from a system panel). */
+    /**
+     * Re-reads everything (on open, after returning from a system panel). On the main thread only
+     * the clock and the notification rows; the system state is read in the background.
+     */
     fun refresh() {
         updateTime()
-        refreshToggles()
-        readSliders()
         bindNotifications()
-        findController()
+        readStates()
+        readMedia()
     }
 
+    /** Called every second while the home clock shows seconds: a text is set only when it changed. */
     fun updateTime() {
         val now = Date()
-        time.text = timeFmt.format(now)
-        date.text = dateFmt.format(now).lowercase()
+        val t = timeFmt.format(now)
+        if (t != lastTime) {
+            lastTime = t
+            time.text = t
+        }
+        val d = dateFmt.format(now).lowercase()
+        if (d != lastDate) {
+            lastDate = d
+            date.text = d
+        }
     }
 
     private fun startListening() {
@@ -679,15 +753,96 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         null
     }
 
-    private fun refreshToggles() {
-        for (t in toggles) {
-            val on = stateOf(t.title) == true
-            t.tile.background = if (on) {
-                act.rounded(Wired.alpha(accent, 0x33), 20f, Wired.alpha(accent, 0x8C))
-            } else {
-                act.rounded(Wired.SURFACE2, 20f, Wired.LINE)
+    private fun flashIndex(): Int = toggles.indexOfFirst { it.title == "Фонарик" }
+
+    /** Every tile in the current accent, each in the state it is known to be in. */
+    private fun restyleTiles() {
+        if (tileOn.size != toggles.size) tileOn = BooleanArray(toggles.size)
+        tileAccent = accent
+        for (i in toggles.indices) drawTile(i, tileOn[i])
+    }
+
+    /** One tile, restyled only when its state or the accent changed. */
+    private fun applyTile(i: Int, on: Boolean) {
+        if (i !in toggles.indices) return
+        if (tileAccent != accent) restyleTiles()
+        if (tileOn[i] == on) return
+        tileOn[i] = on
+        drawTile(i, on)
+    }
+
+    private fun drawTile(i: Int, on: Boolean) {
+        val t = toggles[i]
+        t.tile.background = if (on) {
+            act.rounded(Wired.alpha(accent, 0x33), 20f, Wired.alpha(accent, 0x8C))
+        } else {
+            act.rounded(Wired.SURFACE2, 20f, Wired.LINE)
+        }
+        t.iconView.setImageDrawable(act.icon(t.icon, if (on) Wired.CLOCK else Wired.ICON_SOFT))
+    }
+
+    /** A tile the user just switched: its one state is read again right away. */
+    private fun refreshTile(title: String) {
+        applyTile(toggles.indexOfFirst { it.title == title }, stateOf(title) == true)
+    }
+
+    private fun readStates() {
+        val gen = ++stateGen
+        val titles = toggles.map { it.title }
+        reader.execute {
+            val s = try {
+                gatherStates(titles)
+            } catch (t: Throwable) {
+                null
+            } ?: return@execute
+            main.post {
+                if (gen != stateGen || !isOpen) return@post
+                if (opening) afterOpening.add { if (gen == stateGen && isOpen) applyStates(s) } else applyStates(s)
             }
-            t.iconView.setImageDrawable(act.icon(t.icon, if (on) Wired.CLOCK else Wired.ICON_SOFT))
+        }
+    }
+
+    /** Background thread: the switches, brightness and volume as Android reports them now. */
+    private fun gatherStates(titles: List<String>): States {
+        // the flashlight is known from its callback, on the main thread
+        val tiles = BooleanArray(titles.size) { titles[it] != "Фонарик" && stateOf(titles[it]) == true }
+        val cr = act.contentResolver
+        val b = try {
+            Settings.System.getInt(cr, Settings.System.SCREEN_BRIGHTNESS)
+        } catch (t: Throwable) {
+            -1
+        }
+        val auto = try {
+            Settings.System.getInt(cr, Settings.System.SCREEN_BRIGHTNESS_MODE) == Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC
+        } catch (t: Throwable) {
+            false
+        }
+        var vol = -1
+        var volMax = -1
+        try {
+            act.getSystemService(AudioManager::class.java)?.let {
+                vol = it.getStreamVolume(AudioManager.STREAM_MUSIC)
+                volMax = it.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            }
+        } catch (t: Throwable) {
+            // unreadable
+        }
+        return States(tiles, b, auto, vol, volMax)
+    }
+
+    private fun applyStates(s: States) {
+        for (i in toggles.indices) applyTile(i, if (i == flashIndex()) torchOn else s.tiles.getOrElse(i) { false })
+        if (s.brightness >= 0) {
+            val f = (s.brightness.toFloat() / maxBrightness).coerceIn(0f, 1f).toDouble().pow(1 / 2.2)
+            brightness.progress = (f * 1000).toInt()
+        }
+        if (s.auto != autoOn) {
+            autoOn = s.auto
+            act.styleChip(autoChip, autoOn, accent)
+        }
+        if (s.volumeMax > 0) {
+            volume.max = s.volumeMax
+            volume.progress = s.volume.coerceIn(0, s.volumeMax)
         }
     }
 
@@ -713,7 +868,7 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
                 if (nm != null && nm.isNotificationPolicyAccessGranted) {
                     val on = stateOf(title) == true
                     nm.setInterruptionFilter(if (on) NotificationManager.INTERRUPTION_FILTER_ALL else NotificationManager.INTERRUPTION_FILTER_PRIORITY)
-                    refreshToggles()
+                    refreshTile(title)
                 } else {
                     act.toast("Разреши WIRED управлять режимом «Не беспокоить»")
                     start(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
@@ -723,7 +878,7 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
                 if (Settings.System.canWrite(act)) {
                     val on = stateOf(title) == true
                     Settings.System.putInt(act.contentResolver, Settings.System.ACCELEROMETER_ROTATION, if (on) 0 else 1)
-                    refreshToggles()
+                    refreshTile(title)
                 } else {
                     requestWriteSettings()
                 }
@@ -800,26 +955,6 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         if (v in 1..10000) v else 255
     }
 
-    private fun readSliders() {
-        try {
-            val b = Settings.System.getInt(act.contentResolver, Settings.System.SCREEN_BRIGHTNESS, maxBrightness / 2)
-            val f = (b.toFloat() / maxBrightness).coerceIn(0f, 1f).toDouble().pow(1 / 2.2)
-            brightness.progress = (f * 1000).toInt()
-        } catch (t: Throwable) {
-            // unreadable
-        }
-        refreshAuto()
-        try {
-            val am = act.getSystemService(AudioManager::class.java)
-            if (am != null) {
-                volume.max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                volume.progress = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-            }
-        } catch (t: Throwable) {
-            // unreadable
-        }
-    }
-
     private var askedWrite = false
 
     private fun setBrightness(p: Int) {
@@ -845,17 +980,6 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         }
     }
 
-    private fun refreshAuto() {
-        if (!::autoChip.isInitialized) return
-        autoOn = try {
-            Settings.System.getInt(act.contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE) ==
-                Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC
-        } catch (t: Throwable) {
-            false
-        }
-        act.styleChip(autoChip, autoOn, accent)
-    }
-
     private fun toggleAutoBrightness() {
         if (!Settings.System.canWrite(act)) {
             requestWriteSettings()
@@ -866,10 +990,11 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
                 act.contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE,
                 if (autoOn) Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL else Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC,
             )
+            autoOn = !autoOn
         } catch (t: Throwable) {
             // not allowed on this build
         }
-        refreshAuto()
+        act.styleChip(autoChip, autoOn, accent)
     }
 
     private fun setVolume(p: Int) {
@@ -897,14 +1022,35 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         return f
     }
 
-    private fun findController() {
-        controller?.unregisterCallback(mediaCallback)
-        controller = try {
-            act.getSystemService(MediaSessionManager::class.java)?.getActiveSessions(NotifHub.component(act))?.firstOrNull()
-        } catch (t: Throwable) {
-            null
+    /** The playing app, looked up in the background (two calls into Android and one into the app). */
+    private fun readMedia() {
+        val gen = ++mediaGen
+        reader.execute {
+            val c = try {
+                act.getSystemService(MediaSessionManager::class.java)?.getActiveSessions(NotifHub.component(act))?.firstOrNull()
+            } catch (t: Throwable) {
+                null
+            }
+            val label = c?.let {
+                try {
+                    val pm = act.packageManager
+                    pm.getApplicationLabel(pm.getApplicationInfo(it.packageName, 0)).toString().lowercase()
+                } catch (t: Throwable) {
+                    it.packageName
+                }
+            }
+            main.post {
+                if (gen != mediaGen || !isOpen) return@post
+                if (opening) afterOpening.add { if (gen == mediaGen && isOpen) setController(c, label) } else setController(c, label)
+            }
         }
-        controller?.registerCallback(mediaCallback, Handler(Looper.getMainLooper()))
+    }
+
+    private fun setController(c: MediaController?, label: String?) {
+        controller?.unregisterCallback(mediaCallback)
+        controller = c
+        mediaLabel = label
+        c?.registerCallback(mediaCallback, main)
         bindMedia()
     }
 
@@ -916,17 +1062,15 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
             return
         }
         media.visibility = VISIBLE
-        mediaApp.text = try {
-            val pm = act.packageManager
-            pm.getApplicationLabel(pm.getApplicationInfo(c.packageName, 0)).toString().lowercase()
-        } catch (t: Throwable) {
-            c.packageName
-        }
+        mediaApp.text = mediaLabel ?: c.packageName
         mediaTitle.text = md.getString(MediaMetadata.METADATA_KEY_TITLE) ?: "—"
         mediaArtist.text = md.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: md.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: ""
         val playing = c.playbackState?.state == PlaybackState.STATE_PLAYING
         (playButton.getChildAt(0) as ImageView).setImageDrawable(act.icon(if (playing) R.drawable.ic_pause else R.drawable.ic_play, Wired.CLOCK))
-        playButton.background = act.ripple(act.rounded(Wired.alpha(accent, 0x29), 22f, Wired.alpha(accent, 0x66)), 22f, accent)
+        if (playAccent != accent) {
+            playAccent = accent
+            playButton.background = act.ripple(act.rounded(Wired.alpha(accent, 0x29), 22f, Wired.alpha(accent, 0x66)), 22f, accent)
+        }
     }
 
     private fun togglePlay() {
@@ -972,90 +1116,142 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         val granted = NotifHub.hasAccess(act)
         access.visibility = if (granted) GONE else VISIBLE
         listScroll.visibility = if (granted) VISIBLE else GONE
-        clearButton.visibility = if (granted && NotifHub.items.any { it.clearable }) VISIBLE else GONE
         val items = NotifHub.items
-        notifHead.text = if (granted) "уведомления · " + items.size else "уведомления"
-        // the same notifications as last time (and the same minute for "5 min ago"): keep the rows
+        clearButton.visibility = if (granted && items.any { it.clearable }) VISIBLE else GONE
+        val head = if (granted) "уведомления · " + items.size else "уведомления"
+        if (notifHead.text.toString() != head) notifHead.text = head
+        // the same notifications as last time, in the same minute (for "5 мин"): nothing to do
+        val now = System.currentTimeMillis()
         var sig = 31 * granted.hashCode() + accent
-        sig = 31 * sig + (System.currentTimeMillis() / 60_000L).hashCode()
+        sig = 31 * sig + (now / 60_000L).hashCode()
         for (n in items) {
             sig = 31 * sig + n.key.hashCode()
             sig = 31 * sig + n.time.hashCode()
             sig = 31 * sig + n.title.hashCode()
             sig = 31 * sig + n.text.hashCode()
         }
-        if (sig == boundSig && list.childCount > 0) return
+        if (bound && sig == boundSig) return
+        bound = true
         boundSig = sig
-        list.removeAllViews()
-        if (granted && items.isEmpty()) {
-            val e = act.meta("тишина в сети")
-            e.gravity = Gravity.CENTER
-            e.setPadding(0, act.dpi(24), 0, act.dpi(24))
-            list.addView(e, LinearLayout.LayoutParams(MATCH, WRAP))
+        // Rows are kept by key and updated in place. Rebuilding all of them (up to 40 rows of
+        // eight views) at every open after a minute had passed was the shade's slow first frame.
+        val wanted = ArrayList<View>(items.size + 1)
+        if (granted && items.isEmpty()) wanted.add(emptyRow ?: makeEmptyRow().also { emptyRow = it })
+        val keep = HashSet<String>()
+        for (n in items) {
+            val r = rows[n.key]?.takeIf { it.clearable == n.clearable } ?: makeRow(n.clearable).also { rows[n.key] = it }
+            bindRow(r, n, now)
+            wanted.add(r.view)
+            keep.add(n.key)
         }
-        for (n in items) list.addView(notifRow(n))
+        rows.keys.retainAll(keep)
+        var same = list.childCount == wanted.size
+        if (same) {
+            for (i in wanted.indices) {
+                if (list.getChildAt(i) !== wanted[i]) {
+                    same = false
+                    break
+                }
+            }
+        }
+        if (!same) {
+            list.removeAllViews()
+            for (v in wanted) list.addView(v)
+        }
     }
 
-    private fun notifRow(n: NotifItem): View {
+    private fun makeEmptyRow(): TextView {
+        val e = act.meta("тишина в сети")
+        e.gravity = Gravity.CENTER
+        e.setPadding(0, act.dpi(24), 0, act.dpi(24))
+        e.layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
+        return e
+    }
+
+    private fun makeRow(clearable: Boolean): NotifRow {
         val row = LinearLayout(act)
         row.orientation = LinearLayout.HORIZONTAL
         row.setPadding(act.dpi(12), act.dpi(12), act.dpi(4), act.dpi(12))
-        row.background = act.ripple(act.rounded(Wired.SURFACE, 18f, 0x1482B9FF), 18f, accent)
         row.isClickable = true
         row.isFocusable = true
         val tile = FrameLayout(act)
-        tile.background = act.rounded(Wired.alpha(accent, 0x1A), 11f)
         val iv = ImageView(act)
-        // the cached icon is shared between rows: each row tints its own copy
-        val icon = n.icon
-        (icon?.constantState?.newDrawable(act.resources) ?: icon)?.mutate()?.let {
-            it.setTint(accent)
-            iv.setImageDrawable(it)
-        }
         iv.importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         tile.addView(iv, LayoutParams(act.dpi(18), act.dpi(18), Gravity.CENTER))
         row.addView(tile, LinearLayout.LayoutParams(act.dpi(34), act.dpi(34)))
         val col = LinearLayout(act)
         col.orientation = LinearLayout.VERTICAL
-        val meta = act.meta(n.app.lowercase() + " · " + DateUtils.getRelativeTimeSpanString(n.time, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS).toString().lowercase(), 10f)
+        val meta = act.meta("", 10f)
         meta.singleLine()
         col.addView(meta)
-        if (n.title.isNotBlank()) {
-            val t = act.label(14f, Wired.CLOCK, Fonts.uiSemi)
-            t.text = n.title
-            t.singleLine()
-            val lp = LinearLayout.LayoutParams(MATCH, WRAP)
-            lp.topMargin = act.dpi(4)
-            col.addView(t, lp)
-        }
-        if (n.text.isNotBlank()) {
-            val t = act.label(13f, Wired.TEXT2, Fonts.ui)
-            t.text = n.text
-            t.maxLines = 2
-            t.ellipsize = android.text.TextUtils.TruncateAt.END
-            val lp = LinearLayout.LayoutParams(MATCH, WRAP)
-            lp.topMargin = act.dpi(2)
-            col.addView(t, lp)
-        }
+        val title = act.label(14f, Wired.CLOCK, Fonts.uiSemi)
+        title.singleLine()
+        val tlp = LinearLayout.LayoutParams(MATCH, WRAP)
+        tlp.topMargin = act.dpi(4)
+        col.addView(title, tlp)
+        val text = act.label(13f, Wired.TEXT2, Fonts.ui)
+        text.maxLines = 2
+        text.ellipsize = android.text.TextUtils.TruncateAt.END
+        val xlp = LinearLayout.LayoutParams(MATCH, WRAP)
+        xlp.topMargin = act.dpi(2)
+        col.addView(text, xlp)
         val clp = LinearLayout.LayoutParams(0, WRAP, 1f)
         clp.leftMargin = act.dpi(12)
         row.addView(col, clp)
-        if (n.clearable) {
+        val r = NotifRow(row, tile, iv, meta, title, text, clearable)
+        if (clearable) {
             val x = FrameLayout(act)
             x.contentDescription = "Убрать"
             x.isClickable = true
             x.background = act.ripple(null, 16f)
             x.addView(act.iconView(R.drawable.ic_close, Wired.HINT, 16), LayoutParams(act.dpi(16), act.dpi(16), Gravity.CENTER))
-            x.setOnClickListener { NotifHub.dismiss(n.key) }
+            x.setOnClickListener { r.item?.let { NotifHub.dismiss(it.key) } }
             row.addView(x, LinearLayout.LayoutParams(act.dpi(40), act.dpi(40)))
         }
         row.setOnClickListener {
+            val n = r.item ?: return@setOnClickListener
             NotifHub.open(act, n)
             host.closeShade()
         }
         val lp = LinearLayout.LayoutParams(MATCH, WRAP)
         lp.bottomMargin = act.dpi(8)
         row.layoutParams = lp
-        return row
+        return r
+    }
+
+    /** Only what changed: a new minute is a new "5 мин" text, nothing else. */
+    private fun bindRow(r: NotifRow, n: NotifItem, now: Long) {
+        r.item = n
+        if (r.accent != accent) {
+            r.accent = accent
+            r.view.background = act.ripple(act.rounded(Wired.SURFACE, 18f, 0x1482B9FF), 18f, accent)
+            r.tile.background = act.rounded(Wired.alpha(accent, 0x1A), 11f)
+            r.iconSrc = null
+        }
+        val icon = n.icon
+        if (r.iconSrc !== icon || r.icon.drawable == null) {
+            r.iconSrc = icon
+            // the cached icon is shared between rows: each row tints its own copy
+            val d = (icon?.constantState?.newDrawable(act.resources) ?: icon)?.mutate()
+            d?.setTint(accent)
+            r.icon.setImageDrawable(d)
+        }
+        val meta = n.app.lowercase() + " · " +
+            DateUtils.getRelativeTimeSpanString(n.time, now, DateUtils.MINUTE_IN_MILLIS).toString().lowercase()
+        if (r.metaText != meta) {
+            r.metaText = meta
+            r.meta.text = meta
+        }
+        if (r.titleText != n.title) {
+            r.titleText = n.title
+            r.title.text = n.title
+            r.title.visibility = if (n.title.isBlank()) GONE else VISIBLE
+        }
+        if (r.bodyText != n.text) {
+            r.bodyText = n.text
+            r.text.text = n.text
+            r.text.visibility = if (n.text.isBlank()) GONE else VISIBLE
+        }
+        r.view.contentDescription = n.app + ". " + n.title + ". " + n.text
     }
 }

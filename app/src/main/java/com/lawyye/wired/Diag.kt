@@ -1,6 +1,8 @@
 package com.lawyye.wired
 
 import android.app.Activity
+import android.app.ActivityManager
+import android.app.ApplicationStartInfo
 import android.content.Context
 import android.os.Build
 import android.os.Handler
@@ -21,8 +23,9 @@ import java.util.Locale
  *   (sampled from the display itself), the step between consecutive frames while something moves
  *   (120 / 90 / 60 / 30 fps or a skip), the share of frames that missed their deadline, and the
  *   worst frame with what its time went to.
- * - Starts (always, it costs one timestamp): cold start of the process to the first frame, and
- *   the return home from an app to the first frame.
+ * - Starts: on Android 15+ the system's own record of the last starts (why the process was
+ *   started, what kind of start, from the launch to the first frame); before that our own cold
+ *   start clock. Always: the return home from an app to the first frame.
  * - The home-gesture contract: whether One UI tells WIRED where to animate a closing app
  *   (GestureNavContract). Only if it does could WIRED draw that animation itself.
  */
@@ -242,11 +245,67 @@ object Diag {
         contractIntents = 0
     }
 
+    /**
+     * Android 15+: the system's own record of the last starts. Unlike our own clock it knows why
+     * the process was started — a service may have started it long before anyone pressed Home —
+     * and it measures from the moment the launch began to the first frame.
+     */
+    @android.annotation.TargetApi(35)
+    private fun systemStarts(ctx: Context): String {
+        val am = ctx.getSystemService(ActivityManager::class.java) ?: return ""
+        val list = try {
+            am.getHistoricalProcessStartReasons(8)
+        } catch (t: Throwable) {
+            return ""
+        }
+        if (list.isEmpty()) return ""
+        val sb = StringBuilder("последние запуски по данным Android, сначала новые:\n")
+        for (s in list) {
+            val ts = s.startupTimestamps
+            sb.append("  ").append(startType(s.startType)).append(" · ").append(startReason(s.reason))
+            val launch = ts[ApplicationStartInfo.START_TIMESTAMP_LAUNCH]
+            val first = ts[ApplicationStartInfo.START_TIMESTAMP_FIRST_FRAME]
+            if (launch != null && first != null && first > launch) {
+                sb.append(" · до первого кадра ").append((first - launch) / 1_000_000L).append(" мс")
+                val bind = ts[ApplicationStartInfo.START_TIMESTAMP_BIND_APPLICATION]
+                if (s.startType == ApplicationStartInfo.START_TYPE_COLD && bind != null && bind in launch..first) {
+                    sb.append(" (процесс ").append((bind - launch) / 1_000_000L)
+                        .append(" мс, экран WIRED ").append((first - bind) / 1_000_000L).append(" мс)")
+                }
+            }
+            sb.append("\n")
+        }
+        return sb.toString()
+    }
+
+    private fun startType(t: Int): String = when (t) {
+        ApplicationStartInfo.START_TYPE_COLD -> "с нуля"
+        ApplicationStartInfo.START_TYPE_WARM -> "процесс был, экран заново"
+        ApplicationStartInfo.START_TYPE_HOT -> "возврат на экран"
+        else -> "запуск"
+    }
+
+    private fun startReason(r: Int): String = when (r) {
+        ApplicationStartInfo.START_REASON_START_ACTIVITY -> "экран (кнопка «Домой»)"
+        ApplicationStartInfo.START_REASON_LAUNCHER -> "иконка"
+        ApplicationStartInfo.START_REASON_LAUNCHER_RECENTS -> "недавние приложения"
+        ApplicationStartInfo.START_REASON_SERVICE -> "служба: шторка или уведомления"
+        ApplicationStartInfo.START_REASON_BOOT_COMPLETE -> "включение телефона"
+        ApplicationStartInfo.START_REASON_BROADCAST -> "системное событие"
+        ApplicationStartInfo.START_REASON_JOB, ApplicationStartInfo.START_REASON_ALARM,
+        ApplicationStartInfo.START_REASON_PUSH -> "фоновая задача"
+        ApplicationStartInfo.START_REASON_BACKUP -> "резервная копия"
+        ApplicationStartInfo.START_REASON_CONTENT_PROVIDER -> "запрос данных"
+        else -> "другое"
+    }
+
     fun report(ctx: Context): String = synchronized(this) {
         val sb = StringBuilder()
         sb.append("WIRED ").append(BuildConfig.VERSION_NAME).append(" · Android ").append(Build.VERSION.RELEASE)
             .append(" · ").append(Build.MODEL).append("\n\n")
 
+        val p = Prefs(ctx)
+        val crtLoop = p.homeMode == Prefs.HOME_CRT && p.continuousOn
         sb.append("== плавность ==\n")
         if (!isOn(ctx)) {
             sb.append("замер выключен\n")
@@ -266,6 +325,9 @@ object Diag {
                     .append(" · 60 ").append(pct(b.steps[2], moving))
                     .append(" · 30 ").append(pct(b.steps[3], moving))
                     .append(" · пропуски ").append(pct(b.steps[4], moving)).append("\n")
+                if (i == HOME && crtLoop) {
+                    sb.append("  (30 fps здесь — бегущая полоса CRT-окна: она нарочно идёт 30 кадров в секунду)\n")
+                }
             }
             sb.append("  не успели к сроку: ").append(String.format(Locale.US, "%.1f%%", 100.0 * b.late / b.frames))
                 .append(" · вдвое дольше срока: ").append(String.format(Locale.US, "%.1f%%", 100.0 * b.severe / b.frames)).append("\n")
@@ -280,7 +342,10 @@ object Diag {
         }
 
         sb.append("\n== запуск ==\n")
-        if (coldStartMs >= 0) {
+        val system = if (Build.VERSION.SDK_INT >= 35) systemStarts(ctx) else ""
+        if (system.isNotEmpty()) {
+            sb.append(system)
+        } else if (coldStartMs >= 0) {
             sb.append("холодный запуск: ").append(coldStartMs).append(" мс (процесс до запроса экрана ")
                 .append(processWaitMs).append(" мс, сборка экрана ").append(buildMs).append(" мс)\n")
         } else {
