@@ -66,6 +66,9 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     var isOpen = false
         private set
 
+    /** The drawer now covers the screen completely / is about to uncover it (see HomeActivity). */
+    var onCovering: ((Boolean) -> Unit)? = null
+
     private var apps: List<AppEntry> = emptyList()
     private var visible: List<AppEntry> = emptyList()
     private var hidden: Set<String> = emptySet()
@@ -409,7 +412,7 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         // withLayer: the drawer is drawn once into a GPU layer and only that layer fades and moves;
         // without it every frame of the fade re-rendered the whole drawer through an offscreen buffer
         animate().alpha(1f).translationY(0f).setDuration(280L).setInterpolator(DecelerateInterpolator(2f))
-            .withLayer().withEndAction(null).start()
+            .withLayer().withEndAction { if (isOpen) onCovering?.invoke(true) }.start()
         if (keyboard) {
             edit.requestFocus()
             postDelayed({ showKeyboard() }, 160L)
@@ -419,6 +422,7 @@ class DrawerView(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     fun close(animated: Boolean) {
         if (!isOpen) return
         isOpen = false
+        onCovering?.invoke(false)
         hideKeyboard()
         edit.clearFocus()
         if (animated) {

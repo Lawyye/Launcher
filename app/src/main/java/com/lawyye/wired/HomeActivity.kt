@@ -192,6 +192,10 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
         // the drawer is opaque and the shade nearly so: nothing of the CRT shows behind them
         crt.covered = { drawer.isOpen || shade.isOpen || !hasWindowFocus() }
         shade = QuickPanelView(this, this)
+        // Once a panel covers the whole screen, the home screen under it is hidden: otherwise every
+        // frame of scrolling re-drew the background, the CRT and the effects nobody could see.
+        drawer.onCovering = { covering -> coverHome(covering || shade.isOpen) }
+        shade.onCovering = { covering -> coverHome(covering || drawer.isOpen) }
         crt.setOnClickListener { nextCrtImage() }
         crt.setOnLongClickListener {
             crt.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -365,6 +369,11 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
         val hlp = LinearLayout.LayoutParams(MATCH, WRAP)
         hlp.topMargin = dpi(14)
         col.addView(hint, hlp)
+    }
+
+    private fun coverHome(covered: Boolean) {
+        val v = if (covered) View.INVISIBLE else View.VISIBLE
+        for (layer in arrayOf(backdrop, gestureLayer, content, effects)) layer.visibility = v
     }
 
     private fun bindDock() {

@@ -295,6 +295,9 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
     /** Runs when the close animation has finished (the overlay window is removed then). */
     var onClosed: (() -> Unit)? = null
 
+    /** The panel now covers the screen completely / is about to uncover it. */
+    var onCovering: ((Boolean) -> Unit)? = null
+
     private class Toggle(val icon: Int, val title: String, val tile: FrameLayout, val iconView: ImageView)
 
     var isOpen = false
@@ -496,13 +499,15 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         alpha = 0f
         translationY = -height * 0.12f
         // drawn once into a GPU layer that fades and moves, instead of re-rendering every frame
-        animate().alpha(1f).translationY(0f).setDuration(260L).setInterpolator(DecelerateInterpolator(2f)).withLayer().start()
+        animate().alpha(1f).translationY(0f).setDuration(260L).setInterpolator(DecelerateInterpolator(2f)).withLayer()
+            .withEndAction { if (isOpen) onCovering?.invoke(true) }.start()
         startListening()
     }
 
     fun close(animated: Boolean) {
         if (!isOpen) return
         isOpen = false
+        onCovering?.invoke(false)
         stopListening()
         if (animated) {
             animate().alpha(0f).translationY(-height * 0.08f).setDuration(200L).setInterpolator(DecelerateInterpolator())
