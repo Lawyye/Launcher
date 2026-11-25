@@ -344,7 +344,14 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         override fun onSessionDestroyed() = findController()
     }
     private val sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener { findController() }
-    private val notifListener: () -> Unit = { bindNotifications() }
+    // While the panel slides in, a fresh notification list only marks the rows stale; they are
+    // rebuilt when the animation ends. Rebuilding 40 rows mid-animation was a dropped frame.
+    private var opening = false
+    private var pendingBind = false
+    private var boundSig = 0
+    private val notifListener: () -> Unit = {
+        if (opening) pendingBind = true else bindNotifications()
+    }
 
     init {
         // Android 15+: the panel asks for the top refresh rate while it animates or scrolls
@@ -499,14 +506,24 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         alpha = 0f
         translationY = -height * 0.12f
         // drawn once into a GPU layer that fades and moves, instead of re-rendering every frame
+        opening = true
         animate().alpha(1f).translationY(0f).setDuration(260L).setInterpolator(DecelerateInterpolator(2f)).withLayer()
-            .withEndAction { if (isOpen) onCovering?.invoke(true) }.start()
+            .withEndAction {
+                opening = false
+                if (pendingBind) {
+                    pendingBind = false
+                    bindNotifications()
+                }
+                if (isOpen) onCovering?.invoke(true)
+            }.start()
         startListening()
     }
 
     fun close(animated: Boolean) {
         if (!isOpen) return
         isOpen = false
+        opening = false
+        pendingBind = false
         onCovering?.invoke(false)
         stopListening()
         if (animated) {
@@ -908,6 +925,17 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         clearButton.visibility = if (granted && NotifHub.items.any { it.clearable }) VISIBLE else GONE
         val items = NotifHub.items
         notifHead.text = if (granted) "уведомления · " + items.size else "уведомления"
+        // the same notifications as last time (and the same minute for "5 min ago"): keep the rows
+        var sig = 31 * granted.hashCode() + accent
+        sig = 31 * sig + (System.currentTimeMillis() / 60_000L).hashCode()
+        for (n in items) {
+            sig = 31 * sig + n.key.hashCode()
+            sig = 31 * sig + n.time.hashCode()
+            sig = 31 * sig + n.title.hashCode()
+            sig = 31 * sig + n.text.hashCode()
+        }
+        if (sig == boundSig && list.childCount > 0) return
+        boundSig = sig
         list.removeAllViews()
         if (granted && items.isEmpty()) {
             val e = act.meta("тишина в сети")

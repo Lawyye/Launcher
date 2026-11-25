@@ -119,7 +119,12 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
         registerLive()
         updateClock()
         updateInfo()
-        syncDrawer(false)
+        // after an app was opened the launch counts changed and the drawer re-sorts: do it once the
+        // main thread is idle, not before the first frame of the return home
+        Looper.myQueue().addIdleHandler {
+            if (!isDestroyed) syncDrawer(false)
+            false
+        }
         crt.onVisible(true)
         if (shade.isOpen) shade.refresh()
         if (screenWasOff) {
