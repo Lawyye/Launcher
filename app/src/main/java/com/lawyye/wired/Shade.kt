@@ -31,6 +31,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import android.telephony.TelephonyManager
 import android.text.format.DateUtils
 import android.view.Gravity
 import android.view.View
@@ -403,6 +404,9 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         /** One thread for both panels (home and overlay): the reads are short and rare. */
         val reader = Executors.newSingleThreadExecutor()
         val main = Handler(Looper.getMainLooper())
+
+        /** Notification rows that fit on the screen below the switches. */
+        const val FIRST_ROWS = 6
     }
 
     init {
@@ -525,15 +529,23 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         handle.setOnClickListener { host.closeShade() }
         col.addView(handle, LinearLayout.LayoutParams(MATCH, WRAP))
 
-        try {
-            torchId = cameraManager?.cameraIdList?.firstOrNull { id ->
-                val c = cameraManager.getCameraCharacteristics(id)
-                c.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true &&
-                    c.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
-            }
-        } catch (t: Throwable) {
-            torchId = null
+        // which camera has the flashlight: two calls into the camera service, one of them returning
+        // a large record. It was asked on the main thread every time a panel was built, which is
+        // every creation of the home screen: now in the background, long before anyone needs it.
+        reader.execute {
+            val id = findTorch()
+            main.post { if (torchId == null) torchId = id }
         }
+    }
+
+    private fun findTorch(): String? = try {
+        cameraManager?.cameraIdList?.firstOrNull { id ->
+            val c = cameraManager.getCameraCharacteristics(id)
+            c.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true &&
+                c.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+        }
+    } catch (t: Throwable) {
+        null
     }
 
     fun applyStyle(accent: Int) {
@@ -704,7 +716,7 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         val defs = listOf(
             R.drawable.ic_wifi to "Wi-Fi",
             R.drawable.ic_bluetooth to "Bluetooth",
-            R.drawable.ic_data to "Интернет",
+            R.drawable.ic_data to "Мобильные данные",
             R.drawable.ic_flashlight to "Фонарик",
             R.drawable.ic_moon to "Не беспокоить",
             R.drawable.ic_rotate to "Поворот",
@@ -752,6 +764,8 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         when (title) {
             "Wi-Fi" -> act.applicationContext.getSystemService(WifiManager::class.java)?.isWifiEnabled
             "Bluetooth" -> Settings.Global.getInt(act.contentResolver, Settings.Global.BLUETOOTH_ON, 0) == 1
+            // reading is allowed (network-state permission), switching is not
+            "Мобильные данные" -> act.getSystemService(TelephonyManager::class.java)?.isDataEnabled
             "Фонарик" -> torchOn
             "Не беспокоить" -> act.getSystemService(NotificationManager::class.java)?.currentInterruptionFilter.let {
                 it != null && it != NotificationManager.INTERRUPTION_FILTER_ALL && it != NotificationManager.INTERRUPTION_FILTER_UNKNOWN
@@ -867,9 +881,12 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         when (title) {
             "Wi-Fi" -> panel(Settings.Panel.ACTION_WIFI, Settings.ACTION_WIFI_SETTINGS)
             "Bluetooth" -> start(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
-            "Интернет" -> panel(Settings.Panel.ACTION_INTERNET_CONNECTIVITY, Settings.ACTION_WIRELESS_SETTINGS)
+            // Android lets no app but the system switch mobile data (since 5.0) or Wi-Fi (since 10):
+            // the system panel opens, its first switch (the SIM) is mobile data
+            "Мобильные данные" -> panel(Settings.Panel.ACTION_INTERNET_CONNECTIVITY, Settings.ACTION_WIRELESS_SETTINGS)
             "Фонарик" -> {
-                val id = torchId
+                // not looked up yet (a tap in the first instant after the panel was built): now
+                val id = torchId ?: findTorch()?.also { torchId = it }
                 if (id == null) {
                     act.toast("Вспышка недоступна")
                 } else {
@@ -909,7 +926,7 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         val action = when (title) {
             "Wi-Fi" -> Settings.ACTION_WIFI_SETTINGS
             "Bluetooth" -> Settings.ACTION_BLUETOOTH_SETTINGS
-            "Интернет" -> Settings.ACTION_WIRELESS_SETTINGS
+            "Мобильные данные" -> if (Build.VERSION.SDK_INT >= 28) Settings.ACTION_DATA_USAGE_SETTINGS else Settings.ACTION_WIRELESS_SETTINGS
             "Не беспокоить" -> Settings.ACTION_ZEN_MODE_PRIORITY_SETTINGS
             "Поворот" -> Settings.ACTION_DISPLAY_SETTINGS
             "Геолокация" -> Settings.ACTION_LOCATION_SOURCE_SETTINGS
@@ -1155,13 +1172,31 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         val wanted = ArrayList<View>(items.size + 1)
         if (granted && items.isEmpty()) wanted.add(emptyRow ?: makeEmptyRow().also { emptyRow = it })
         val keep = HashSet<String>()
+        // the first open of a panel has no rows yet: while it slides in, only a screenful is built
+        // (the measured 48 ms frame was 40 rows at once), the rest when the slide has ended
+        var budget = if (opening) FIRST_ROWS else Int.MAX_VALUE
+        var complete = true
         for (n in items) {
-            val r = rows[n.key]?.takeIf { it.clearable == n.clearable } ?: makeRow(n.clearable).also { rows[n.key] = it }
+            var r = rows[n.key]?.takeIf { it.clearable == n.clearable }
+            if (r == null) {
+                if (budget == 0) {
+                    complete = false
+                    break
+                }
+                budget--
+                r = makeRow(n.clearable)
+                rows[n.key] = r
+            }
             bindRow(r, n, now)
             wanted.add(r.view)
             keep.add(n.key)
         }
-        rows.keys.retainAll(keep)
+        if (complete) {
+            rows.keys.retainAll(keep)
+        } else {
+            bound = false
+            pendingBind = true
+        }
         var same = list.childCount == wanted.size
         if (same) {
             for (i in wanted.indices) {

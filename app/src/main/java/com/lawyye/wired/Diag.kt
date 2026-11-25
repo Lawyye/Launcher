@@ -345,6 +345,10 @@ object Diag {
         val system = if (Build.VERSION.SDK_INT >= 35) systemStarts(ctx) else ""
         if (system.isNotEmpty()) {
             sb.append(system)
+            // how much of a "screen created anew" start is WIRED's own work
+            if (buildMs >= 0) {
+                sb.append("из этого сам WIRED строил экран (от onCreate до первого кадра): ").append(buildMs).append(" мс\n")
+            }
         } else if (coldStartMs >= 0) {
             sb.append("холодный запуск: ").append(coldStartMs).append(" мс (процесс до запроса экрана ")
                 .append(processWaitMs).append(" мс, сборка экрана ").append(buildMs).append(" мс)\n")
