@@ -124,7 +124,18 @@ object AppRepository {
     }
 
     private fun changed(ctx: Context, pkg: String?) {
-        if (pkg != null) IconCache.invalidatePackage(pkg) else IconCache.clear()
+        when {
+            pkg == null -> {
+                IconPacks.reset()
+                IconCache.clear()
+            }
+            // the chosen icon pack itself was updated or removed: every icon is drawn again
+            IconPacks.isCurrent(pkg) -> {
+                IconPacks.reset()
+                IconCache.clear()
+            }
+            else -> IconCache.invalidatePackage(pkg)
+        }
         reload(ctx)
     }
 
@@ -198,7 +209,14 @@ object IconCache {
         }
     }
 
-    private fun cacheKey(app: AppEntry, px: Int) = app.key + "@" + px
+    /**
+     * Bumped when every icon changes at once (another icon pack): renders still in flight finish
+     * under the old keys, which are never asked for again.
+     */
+    @Volatile
+    private var epoch = 0
+
+    private fun cacheKey(app: AppEntry, px: Int) = app.key + "@" + px + "#" + epoch
 
     fun bind(iv: ImageView, app: AppEntry, px: Int) {
         val k = cacheKey(app, px)
@@ -271,7 +289,8 @@ object IconCache {
     }
 
     private fun render(ctx: Context, app: AppEntry, px: Int): Bitmap? = try {
-        val d = app.info.getBadgedIcon(ctx.resources.displayMetrics.densityDpi)
+        val dpi = ctx.resources.displayMetrics.densityDpi
+        val d = IconPacks.iconFor(ctx, app, dpi) ?: app.info.getBadgedIcon(dpi)
         val bmp = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
         d.setBounds(0, 0, px, px)
@@ -287,5 +306,9 @@ object IconCache {
         }
     }
 
-    fun clear() = cache.evictAll()
+    fun clear() {
+        epoch++
+        warmGeneration++
+        cache.evictAll()
+    }
 }

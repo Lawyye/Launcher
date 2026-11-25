@@ -114,3 +114,29 @@ class ImagesTest {
         assertEquals(1, Images.sampleFor(100, 100, 0))
     }
 }
+
+class AppFilterTest {
+    @Test
+    fun fullComponentIsRead() {
+        assertEquals("com.whatsapp/com.whatsapp.Main", AppFilter.componentKey("ComponentInfo{com.whatsapp/com.whatsapp.Main}"))
+    }
+
+    @Test
+    fun shortClassNameIsExpanded() {
+        assertEquals("org.telegram.messenger/org.telegram.messenger.DefaultIcon", AppFilter.componentKey("ComponentInfo{org.telegram.messenger/.DefaultIcon}"))
+    }
+
+    @Test
+    fun spacesAreTrimmed() {
+        assertEquals("com.app/com.app.Main", AppFilter.componentKey("ComponentInfo{ com.app / com.app.Main }"))
+    }
+
+    @Test
+    fun brokenEntriesAreSkipped() {
+        assertEquals(null, AppFilter.componentKey("ComponentInfo{:LAUNCHER_ACTION_APP_DRAWER}"))
+        assertEquals(null, AppFilter.componentKey("ComponentInfo{com.app/}"))
+        assertEquals(null, AppFilter.componentKey("ComponentInfo{/com.app.Main}"))
+        assertEquals(null, AppFilter.componentKey("com.app/com.app.Main"))
+        assertEquals(null, AppFilter.componentKey("ComponentInfo{}"))
+    }
+}

@@ -252,6 +252,8 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
         crt.accent = accent
         crt.filter = ImageFilter.of(prefs.crtFilter)
         crt.continuous = prefs.continuousOn
+        // another icon pack: every cached icon is stale, the drawer and dock below draw them again
+        if (IconPacks.select(prefs.iconPack)) IconCache.clear()
         drawer.applyStyle(prefs)
         shade.applyStyle(accent)
         buildContent()

@@ -143,6 +143,11 @@ class Prefs(private val sp: SharedPreferences, private val filesDir: File) {
         get() = bool("own_shade", true)
         set(v) = put("own_shade", v)
 
+    /** Package of the chosen icon pack, "" for the apps' own icons. */
+    var iconPack: String
+        get() = sp.getString("icon_pack", null).orEmpty()
+        set(v) = sp.edit().putString("icon_pack", v).apply()
+
     /** Where along the top edge a swipe down opens the WIRED shade over other apps. */
     var topZone: Int
         get() = int("top_zone", ZONE_FULL)

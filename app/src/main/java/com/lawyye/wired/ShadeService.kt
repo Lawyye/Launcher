@@ -11,6 +11,7 @@ import android.content.IntentFilter
 import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.os.Build
+import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.GestureDetector
@@ -107,11 +108,9 @@ class WiredShadeService : AccessibilityService(), QuickPanelView.Host {
         super.onConfigurationChanged(newConfig)
         // an open shade finishes as it is; the next swipe builds a window with the new sizes
         cachedWindow = null
-        // rotation changes the width of the catch zone
-        if (stripShown) {
-            hideStrip()
-            updateStrip()
-        }
+        // rotation changes the width of the catch zone, and in landscape there is none
+        hideStrip()
+        if (getSystemService(PowerManager::class.java)?.isInteractive != false) updateStrip()
     }
 
     /** Asks for window events only while the shade is open: the rest of the time, zero traffic. */
@@ -144,6 +143,12 @@ class WiredShadeService : AccessibilityService(), QuickPanelView.Host {
 
     fun updateStrip() {
         if (!::wm.isInitialized || locked()) return
+        // turned sideways it is almost always a game or a video: their top edge, with its buttons,
+        // stays theirs and the system's
+        if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            hideStrip()
+            return
+        }
         val v = strip ?: makeStrip().also { strip = it }
         val lp = stripParams()
         try {

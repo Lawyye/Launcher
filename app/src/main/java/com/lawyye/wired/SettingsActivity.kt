@@ -119,7 +119,7 @@ class SettingsActivity : Activity() {
         })
         col.addView(sh)
         val shHint = meta("свайп от верхнего края ловит полоска над строкой состояния (служба специальных возможностей WIRED). " +
-            "Шторка Samsung — стрелка вверху шторки WIRED, или оставь ей половину края. На заблокированном экране всегда шторка Samsung.")
+            "Шторка Samsung — стрелка вверху шторки WIRED, или оставь ей половину края. На заблокированном экране и в горизонтальном положении (игры, видео) — всегда шторка Samsung.")
         shHint.setLineSpacing(0f, 1.4f)
         shHint.setPadding(dpi(4), dpi(10), 0, 0)
         col.addView(shHint)
@@ -169,6 +169,10 @@ class SettingsActivity : Activity() {
             prefs.iconMode = i
             changed()
         })
+        val pack = prefs.iconPack
+        val packLabel = if (pack.isEmpty()) "нет" else IconPacks.labelOf(this, pack) ?: "удалён"
+        apps.add(settingsRow(R.drawable.ic_bag, "Набор иконок", accent,
+            value = if (packLabel.length > 18) packLabel.take(17) + "…" else packLabel) { pickIconPack() })
         val sizes = listOf(48, 56, 64)
         apps.add(segRow(R.drawable.ic_resize, "Размер иконок", sizes.map { "$it dp" }, sizes.indexOf(prefs.iconSizeDp).coerceAtLeast(1)) { i ->
             prefs.iconSizeDp = sizes[i]
@@ -414,6 +418,38 @@ class SettingsActivity : Activity() {
             row.addView(f, LinearLayout.LayoutParams(dpi(38), dpi(44)))
         }
         return row
+    }
+
+    /** Icon packs from Google Play (any made for Nova or ADW); apps a pack lacks keep their icon. */
+    private fun pickIconPack() {
+        val packs = IconPacks.installed(this)
+        val current = prefs.iconPack
+        if (packs.isEmpty()) {
+            WiredDialog(this, accent).header(null, "Набор иконок", "ни одного не найдено")
+                .message(
+                    "Наборы иконок ставятся из Google Play как обычные приложения — подойдёт любой, " +
+                        "сделанный для Nova или ADW. Поставь набор и вернись сюда.",
+                )
+                .option(R.drawable.ic_bag, "Найти в Google Play") {
+                    AppActions.safeStart(this, Intent(Intent.ACTION_VIEW, android.net.Uri.parse("market://search?q=icon%20pack&c=apps")))
+                }
+                .option(R.drawable.ic_check, "Хорошо") {}
+                .show()
+            return
+        }
+        val d = WiredDialog(this, accent).header(null, "Набор иконок", "чего нет в наборе — остаётся своим")
+        d.option(R.drawable.ic_squircle, "Свои иконки приложений", checked = current.isEmpty()) { setIconPack("") }
+        for (p in packs) d.option(R.drawable.ic_bag, p.label, checked = p.pkg == current) { setIconPack(p.pkg) }
+        d.show()
+    }
+
+    private fun setIconPack(pkg: String) {
+        if (pkg == prefs.iconPack) return
+        prefs.iconPack = pkg
+        changed()
+        val y = scroll.scrollY
+        build()
+        scroll.post { scroll.scrollTo(0, y) }
     }
 
     private fun restoreHidden() {

@@ -312,6 +312,10 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
     private val toggleGrid = LinearLayout(act)
     private lateinit var brightness: SeekBar
     private lateinit var volume: SeekBar
+
+    /** Samsung's adaptive brightness, shown and switched next to the brightness slider. */
+    private lateinit var autoChip: TextView
+    private var autoOn = false
     private val media = LinearLayout(act)
     private val mediaApp = act.meta("")
     private val mediaTitle = act.label(15f, Wired.CLOCK, Fonts.uiSemi)
@@ -399,7 +403,11 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         sliders.setPadding(act.dpi(14), act.dpi(8), act.dpi(10), act.dpi(8))
         brightness = act.wiredSlider(1000, 500, accent) { p -> setBrightness(p) }
         volume = act.wiredSlider(15, 7, accent) { p -> setVolume(p) }
-        sliders.addView(sliderRow(R.drawable.ic_sun, "Яркость", brightness))
+        autoChip = act.chip("авто", false, accent) { toggleAutoBrightness() }
+        autoChip.contentDescription = "Автояркость"
+        autoChip.minHeight = act.dpi(32)
+        autoChip.setPadding(act.dpi(10), 0, act.dpi(10), 0)
+        sliders.addView(sliderRow(R.drawable.ic_sun, "Яркость", brightness, autoChip))
         sliders.addView(sliderRow(R.drawable.ic_volume, "Громкость", volume))
         val slp = LinearLayout.LayoutParams(MATCH, WRAP)
         slp.topMargin = act.dpi(14)
@@ -485,6 +493,7 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
             sb.thumbTintList = android.content.res.ColorStateList.valueOf(accent)
         }
         refreshToggles()
+        refreshAuto()
     }
 
     fun setInsets(top: Int, bottom: Int, left: Int, right: Int) {
@@ -765,7 +774,7 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
 
     // ------------------------------------------------------------ sliders
 
-    private fun sliderRow(icon: Int, title: String, bar: SeekBar): View {
+    private fun sliderRow(icon: Int, title: String, bar: SeekBar, trailing: View? = null): View {
         val row = LinearLayout(act)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
@@ -777,6 +786,11 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         val lp = LinearLayout.LayoutParams(0, act.dpi(40), 1f)
         lp.leftMargin = act.dpi(8)
         row.addView(bar, lp)
+        if (trailing != null) {
+            val tlp = LinearLayout.LayoutParams(WRAP, WRAP)
+            tlp.leftMargin = act.dpi(6)
+            row.addView(trailing, tlp)
+        }
         return row
     }
 
@@ -794,6 +808,7 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         } catch (t: Throwable) {
             // unreadable
         }
+        refreshAuto()
         try {
             val am = act.getSystemService(AudioManager::class.java)
             if (am != null) {
@@ -817,11 +832,44 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         }
         try {
             val v = ((p / 1000.0).pow(2.2) * maxBrightness).toInt().coerceIn(1, maxBrightness)
-            Settings.System.putInt(act.contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE, Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
+            // a manual level only takes effect with adaptive brightness off: switch it off once,
+            // visibly ("авто" goes dark), instead of writing the mode on every step of the drag
+            if (autoOn) {
+                Settings.System.putInt(act.contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE, Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
+                autoOn = false
+                act.styleChip(autoChip, false, accent)
+            }
             Settings.System.putInt(act.contentResolver, Settings.System.SCREEN_BRIGHTNESS, v)
         } catch (t: Throwable) {
             // not allowed on this build
         }
+    }
+
+    private fun refreshAuto() {
+        if (!::autoChip.isInitialized) return
+        autoOn = try {
+            Settings.System.getInt(act.contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE) ==
+                Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC
+        } catch (t: Throwable) {
+            false
+        }
+        act.styleChip(autoChip, autoOn, accent)
+    }
+
+    private fun toggleAutoBrightness() {
+        if (!Settings.System.canWrite(act)) {
+            requestWriteSettings()
+            return
+        }
+        try {
+            Settings.System.putInt(
+                act.contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE,
+                if (autoOn) Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL else Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC,
+            )
+        } catch (t: Throwable) {
+            // not allowed on this build
+        }
+        refreshAuto()
     }
 
     private fun setVolume(p: Int) {

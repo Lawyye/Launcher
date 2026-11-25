@@ -17,6 +17,8 @@ class WiredApp : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this)
+        // before the first icon is drawn, so a cold start shows the pack's icons straight away
+        IconPacks.select(Prefs(this).iconPack)
     }
 }
 
@@ -87,7 +89,8 @@ object CrashLog {
         return "память WIRED: " + pss + " МБ всего (Java " + heap + ", native " + native +
             ", иконки " + IconCache.bytes() / MB + ")\n" +
             "шторка сверху: " + (if (WiredShadeService.isEnabled(ctx)) "включена" else "выключена") + "\n" +
-            "доступ к уведомлениям: " + (if (NotifHub.hasAccess(ctx)) "есть" else "нет") + "\n"
+            "доступ к уведомлениям: " + (if (NotifHub.hasAccess(ctx)) "есть" else "нет") + "\n" +
+            "набор иконок: " + Prefs(ctx).iconPack.ifEmpty { "нет" } + "\n"
     }
 
     private const val MB = 1024 * 1024

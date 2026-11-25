@@ -109,3 +109,25 @@ object Images {
         return s
     }
 }
+
+/** Icon packs (the ADW / Nova format): reading the component names of appfilter.xml. */
+object AppFilter {
+    /**
+     * "ComponentInfo{com.whatsapp/com.whatsapp.Main}" → "com.whatsapp/com.whatsapp.Main", the form
+     * an app's activity is looked up by; a short class name (".Main") is expanded with the package.
+     * Broken entries (no package or no activity) → null.
+     */
+    fun componentKey(raw: String): String? {
+        val start = raw.indexOf('{')
+        val end = raw.lastIndexOf('}')
+        if (start < 0 || end <= start + 1) return null
+        val body = raw.substring(start + 1, end).trim()
+        val slash = body.indexOf('/')
+        if (slash <= 0 || slash >= body.length - 1) return null
+        val pkg = body.substring(0, slash).trim()
+        var cls = body.substring(slash + 1).trim()
+        if (cls.startsWith(".")) cls = pkg + cls
+        if (pkg.isEmpty() || cls.isEmpty()) return null
+        return "$pkg/$cls"
+    }
+}
