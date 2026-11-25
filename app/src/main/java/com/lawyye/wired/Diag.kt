@@ -19,7 +19,8 @@ import java.util.Locale
  * guesses. Settings → система → Диагностика.
  *
  * - Frames (only while "Замер плавности" is on): every frame the home window draws, sorted by
- *   what was on screen (home, drawer, shade). For each: how often the display ran at 120 Hz
+ *   what was on screen (home, drawer, shade — a closing menu or shade still counts as itself —
+ *   and the home screen's first second after unlocking). For each: how often the display ran at 120 Hz
  *   (sampled from the display itself), the step between consecutive frames while something moves
  *   (120 / 90 / 60 / 30 fps or a skip), the share of frames that missed their deadline, and the
  *   worst frame with what its time went to.
@@ -33,7 +34,10 @@ object Diag {
     const val HOME = 0
     const val DRAWER = 1
     const val SHADE = 2
-    private val NAMES = arrayOf("главный экран", "меню приложений", "шторка")
+
+    /** Home frames in the first second after unlocking: the monitor switching on, the clock glitch. */
+    private const val UNLOCK = 3
+    private val NAMES = arrayOf("главный экран", "меню приложений", "шторка", "главный экран, первая секунда после разблокировки")
 
     private class Bucket {
         var frames = 0L
@@ -41,6 +45,11 @@ object Diag {
         var severe = 0L
         var worstNs = 0L
         val worstParts = LongArray(PARTS.size)
+        var worstGpuNs = 0L
+
+        // Android 12+: frames whose GPU work alone took longer than the frame's deadline
+        var gpuSamples = 0L
+        var gpuLate = 0L
 
         // the display's own refresh rate at each frame
         var hzSamples = 0L
@@ -55,6 +64,9 @@ object Diag {
             severe = 0L
             worstNs = 0L
             worstParts.fill(0L)
+            worstGpuNs = 0L
+            gpuSamples = 0L
+            gpuLate = 0L
             hzSamples = 0L
             hzHigh = 0L
             steps.fill(0L)
@@ -78,7 +90,16 @@ object Diag {
     private var displayHz = 60f
     private var lastVsync = 0L
 
-    private val buckets = Array(3) { Bucket() }
+    private val buckets = Array(4) { Bucket() }
+
+    /** Until this System.nanoTime(), home frames count as "after unlock". Set on the main thread. */
+    @Volatile
+    private var unlockUntilNs = 0L
+
+    /** The home screen came back after the screen was off: its next second is counted apart. */
+    fun onUnlock() {
+        unlockUntilNs = System.nanoTime() + 1_000_000_000L
+    }
 
     /** What is on screen now; written on the main thread every frame, read by the metrics thread. */
     @Volatile
@@ -154,7 +175,10 @@ object Diag {
         val deadline = if (Build.VERSION.SDK_INT >= 31) m.getMetric(FrameMetrics.DEADLINE) else fallbackNs
         if (total <= 0L || deadline <= 0L) return
         val vsync = m.getMetric(FrameMetrics.VSYNC_TIMESTAMP)
-        val b = buckets[scene.coerceIn(0, 2)]
+        val vsyncAt = m.getMetric(FrameMetrics.INTENDED_VSYNC_TIMESTAMP)
+        val sc = scene.coerceIn(0, 2)
+        val b = buckets[if (sc == HOME && vsyncAt in 1 until unlockUntilNs) UNLOCK else sc]
+        val gpu = if (Build.VERSION.SDK_INT >= 31) m.getMetric(FrameMetrics.GPU_DURATION) else -1L
         synchronized(this) {
             b.frames++
             if (total > deadline) b.late++
@@ -162,6 +186,11 @@ object Diag {
             if (total > b.worstNs) {
                 b.worstNs = total
                 for (i in PARTS.indices) b.worstParts[i] = m.getMetric(PARTS[i].first).coerceAtLeast(0L)
+                b.worstGpuNs = gpu.coerceAtLeast(0L)
+            }
+            if (gpu > 0L) {
+                b.gpuSamples++
+                if (gpu > deadline) b.gpuLate++
             }
             b.hzSamples++
             if (displayHz >= 100f) b.hzHigh++
@@ -331,6 +360,11 @@ object Diag {
             }
             sb.append("  не успели к сроку: ").append(String.format(Locale.US, "%.1f%%", 100.0 * b.late / b.frames))
                 .append(" · вдвое дольше срока: ").append(String.format(Locale.US, "%.1f%%", 100.0 * b.severe / b.frames)).append("\n")
+            if (b.gpuSamples > 0) {
+                // the GPU's own time, apart from the rest of the frame: tells whether drawing itself is the limit
+                sb.append("  видеочип сам не успел к сроку: ").append(String.format(Locale.US, "%.1f%%", 100.0 * b.gpuLate / b.gpuSamples))
+                    .append(" кадров\n")
+            }
             sb.append("  худший кадр ").append(String.format(Locale.US, "%.0f мс", b.worstNs / 1e6))
             val parts = PARTS.indices.filter { b.worstParts[it] >= 1_000_000L }.sortedByDescending { b.worstParts[it] }
             if (parts.isNotEmpty()) {
@@ -338,6 +372,7 @@ object Diag {
                     parts.joinToString(", ") { PARTS[it].second + " " + String.format(Locale.US, "%.0f", b.worstParts[it] / 1e6) },
                 )
             }
+            if (b.worstGpuNs >= 1_000_000L) sb.append(" · из них работа видеочипа ").append(b.worstGpuNs / 1_000_000L)
             sb.append("\n")
         }
 

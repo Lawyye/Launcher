@@ -133,8 +133,9 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
         }
         Diag.attach(this) {
             when {
-                shade.isOpen -> Diag.SHADE
-                drawer.isOpen -> Diag.DRAWER
+                // a menu or shade sliding away still counts as itself, not as the home screen
+                shade.isOpen || shade.visibility == View.VISIBLE -> Diag.SHADE
+                drawer.isOpen || drawer.visibility == View.VISIBLE -> Diag.DRAWER
                 else -> Diag.HOME
             }
         }
@@ -459,6 +460,7 @@ class HomeActivity : Activity(), DrawerView.Host, DockView.Host, QuickPanelView.
 
     /** Screen came back on: the monitor switches on, the clock glitches once. */
     private fun onUnlock() {
+        Diag.onUnlock()
         if (prefs.homeMode == Prefs.HOME_CRT) {
             if (prefs.crtRotate && prefs.crtImages.size > 1) {
                 prefs.crtIndex = (prefs.crtIndex + 1).mod(prefs.crtImages.size)

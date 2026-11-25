@@ -407,6 +407,9 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
 
         /** Notification rows that fit on the screen below the switches. */
         const val FIRST_ROWS = 6
+
+        /** Rows built per frame after that: about a millisecond each. */
+        const val MORE_ROWS = 4
     }
 
     init {
@@ -598,8 +601,9 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
                 val todo = ArrayList(afterOpening)
                 afterOpening.clear()
                 for (a in todo) a()
-                startSystemListening()
                 onCovering?.invoke(true)
+                // the camera and media services in a message of their own, not in this frame's
+                post { if (isOpen) startSystemListening() }
             }.start()
         startListening()
     }
@@ -1172,9 +1176,10 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
         val wanted = ArrayList<View>(items.size + 1)
         if (granted && items.isEmpty()) wanted.add(emptyRow ?: makeEmptyRow().also { emptyRow = it })
         val keep = HashSet<String>()
-        // the first open of a panel has no rows yet: while it slides in, only a screenful is built
-        // (the measured 48 ms frame was 40 rows at once), the rest when the slide has ended
-        var budget = if (opening) FIRST_ROWS else Int.MAX_VALUE
+        // A panel's first open has no rows yet. While it slides in only a screenful is built, the
+        // rest a few rows per frame after it: 40 rows at once was a measured 48 ms frame, and
+        // building them all right after the slide was still one 52 ms frame.
+        var budget = if (opening) FIRST_ROWS else MORE_ROWS
         var complete = true
         for (n in items) {
             var r = rows[n.key]?.takeIf { it.clearable == n.clearable }
@@ -1195,21 +1200,16 @@ class QuickPanelView(private val act: Context, private val host: Host) : FrameLa
             rows.keys.retainAll(keep)
         } else {
             bound = false
-            pendingBind = true
+            // the next rows after the next frame (a posted message waits behind the frame)
+            if (opening) pendingBind = true else post { if (isOpen && !bound) bindNotifications() }
         }
-        var same = list.childCount == wanted.size
-        if (same) {
-            for (i in wanted.indices) {
-                if (list.getChildAt(i) !== wanted[i]) {
-                    same = false
-                    break
-                }
-            }
-        }
-        if (!same) {
-            list.removeAllViews()
-            for (v in wanted) list.addView(v)
-        }
+        // children in the wanted order: the matching start stays, only the rest is replaced, so
+        // rows appended a few at a time never re-add the ones already shown
+        var keepCount = 0
+        val common = minOf(list.childCount, wanted.size)
+        while (keepCount < common && list.getChildAt(keepCount) === wanted[keepCount]) keepCount++
+        if (keepCount < list.childCount) list.removeViews(keepCount, list.childCount - keepCount)
+        for (i in keepCount until wanted.size) list.addView(wanted[i])
     }
 
     private fun makeEmptyRow(): TextView {
